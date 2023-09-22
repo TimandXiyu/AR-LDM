@@ -1,25 +1,25 @@
 # device
 mode: train  # train sample
-gpu_ids: [ 0, 1, 2, 3 ]  # gpu ids
-batch_size: 1  # batch size each item denotes one story
-num_workers: 4  # number of workers
+gpu_ids: [0,1,2,3]  # gpu ids
+batch_size: 2  # batch size each item denotes one story
+num_workers: 16  # number of workers
 num_cpu_cores: -1  # number of cpu cores
 seed: 0  # random seed
-ckpt_dir: /path/to/save_ckpt # checkpoint directory
-run_name: your_run_name # name for this run
+ckpt_dir: ./ckpts # checkpoint directory
+run_name: flintstones_repro_v1 # name for this run
 
 # task
-dataset: pororo  # pororo flintstones vistsis vistdii
-task: continuation  # continuation visualization
+dataset: flintstones  # pororo flintstones vistsis vistdii
+task: visualization  # continuation visualization
 
 # train
 init_lr: 1e-5  # initial learning rate
 warmup_epochs: 1  # warmup epochs
 max_epochs: 50  # max epochs
 train_model_file:  # model file for resume, none for train from scratch
-freeze_clip: False  # whether to freeze clip
-freeze_blip: False  # whether to freeze blip
-freeze_resnet: False  # whether to freeze resnet
+freeze_clip: True  # whether to freeze clip
+freeze_blip: True  # whether to freeze blip
+freeze_resnet: True  # whether to freeze resnet
 
 # sample
 test_model_file:  # model file for test
@@ -37,7 +37,7 @@ pororo:
   blip_embedding_tokens: 30530
 
 flintstones:
-  hdf5_file: /path/to/flintstones.h5
+  hdf5_file: ./data/flintstones.hdf5
   max_length: 91
   new_tokens: [ "fred", "barney", "wilma", "betty", "pebbles", "dino", "slate" ]
   clip_embedding_tokens: 49412

@@ -25,7 +25,7 @@ class StoryDataset(Dataset):
 
         self.augment = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize([512, 512]),
+            transforms.Resize([256, 256]),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5])
         ])
@@ -91,3 +91,18 @@ class StoryDataset(Dataset):
         if not hasattr(self, 'h5'):
             self.open_h5()
         return len(self.h5['text'])
+
+
+if __name__ == "__main__":
+    import argparse
+    import yaml
+    from tqdm import tqdm
+    dict_config = yaml.load(open('../config.yaml', 'r'), Loader=yaml.FullLoader)
+    args = argparse.Namespace()
+    for k, v in dict_config.items():
+        setattr(args, k, v)
+    story_dataset = StoryDataset('train', args=args)
+    from torch.utils.data import DataLoader
+    story_dataloader = DataLoader(story_dataset, batch_size=4, shuffle=True, num_workers=8)
+    for batch in tqdm(story_dataloader, total=len(story_dataloader)):
+        pass

@@ -1,0 +1,7 @@
+*.npy
+.idea/
+*json
+*pyc
+*pkl
+*mat
+*hdf5*

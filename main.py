@@ -126,15 +126,21 @@ class ARLDM(pl.LightningModule):
         self.text_encoder.config.max_position_embeddings = self.max_length
         self.text_encoder.max_position_embeddings = self.max_length
         self.text_encoder.text_model.embeddings.position_ids = torch.arange(self.max_length).expand((1, -1))
+        # for name, param in self.text_encoder.named_parameters():
+        #     param.data = param.data.half()
 
         self.modal_type_embeddings = nn.Embedding(2, 768)
         self.time_embeddings = nn.Embedding(5, 768)
         self.mm_encoder = blip_feature_extractor(
-            pretrained='https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large.pth',
-            image_size=224, vit='large')
+            pretrained='https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_base.pth',
+            image_size=224, vit='base')
         self.mm_encoder.text_encoder.resize_token_embeddings(args.get(args.dataset).blip_embedding_tokens)
+        # for name, param in self.mm_encoder.named_parameters():
+        #     param.data = param.data.half()
 
         self.vae = AutoencoderKL.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="vae")
+        # for name, param in self.vae.named_parameters():
+        #     param.data = param.data.half()
         self.unet = UNet2DConditionModel.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="unet")
         self.noise_scheduler = DDPMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
                                              num_train_timesteps=1000)
@@ -415,7 +421,8 @@ def train(args: DictConfig) -> None:
         logger=logger,
         log_every_n_steps=1,
         callbacks=callback_list,
-        strategy=DDPStrategy(find_unused_parameters=False)
+        strategy=DDPStrategy(find_unused_parameters=False),
+        precision=16
     )
     trainer.fit(model, dataloader, ckpt_path=args.train_model_file)
 

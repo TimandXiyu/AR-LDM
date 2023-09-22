@@ -22,6 +22,10 @@ def main(args):
     for subset, ids in {'train': train_ids, 'val': val_ids, 'test': test_ids}.items():
         ids = [i for i in ids if i in followings and len(followings[i]) == 4]
         length = len(ids)
+        # check file exist in ids
+        for id in ids:
+            if not os.path.exists(os.path.join(args.data_dir, 'video_frames_sampled', '{}.npy'.format(id))):
+                print("file not exist: {}".format(id))
 
         group = f.create_group(subset)
         images = list()
