@@ -421,8 +421,9 @@ def train(args: DictConfig) -> None:
         logger=logger,
         log_every_n_steps=1,
         callbacks=callback_list,
-        strategy=DDPStrategy(find_unused_parameters=False),
-        precision=16
+        # strategy=DDPStrategy(find_unused_parameters=False),
+        strategy='fsdp',
+        precision=16,
     )
     trainer.fit(model, dataloader, ckpt_path=args.train_model_file)
 

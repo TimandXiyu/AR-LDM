@@ -5,3 +5,6 @@
 *pkl
 *mat
 *hdf5*
+events*
+*yaml
+*.log
