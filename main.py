@@ -3,6 +3,7 @@ import os
 
 import hydra
 import numpy as np
+from tqdm import tqdm
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
@@ -23,6 +24,15 @@ from fid_utils import calculate_fid_given_features
 from models.blip_override.blip import blip_feature_extractor, init_tokenizer
 from models.diffusers_override.unet_2d_condition import UNet2DConditionModel
 from models.inception import InceptionV3
+from pytorch_lightning.callbacks import TQDMProgressBar
+import bitsandbytes as bnb
+
+
+# class MyProgressBar(TQDMProgressBar):
+#     def on_train_batch_end(self, trainer, pl_module):
+#         lr = trainer.optimizers[0].param_groups[0]['lr']
+#         self.main_progress_bar.set_postfix(lr=f"{lr:.6f}", refresh=True)
+#         super().on_train_batch_end(trainer, pl_module)
 
 
 class LightningDataset(pl.LightningDataModule):
@@ -46,8 +56,13 @@ class LightningDataset(pl.LightningDataModule):
         if stage == "fit":
             self.train_data = data.StoryDataset("train", self.args)
             self.val_data = data.StoryDataset("val", self.args)
+        if stage == "adapt":
+            self.train_data = data.StoryDataset("train", self.args)
+            self.val_data = None
         if stage == "test":
             self.test_data = data.StoryDataset("test", self.args)
+        if stage == "custom":
+            self.test_data = data.CustomStory(self.args)
 
     def train_dataloader(self):
         if not hasattr(self, 'trainloader'):
@@ -55,6 +70,8 @@ class LightningDataset(pl.LightningDataModule):
         return self.trainloader
 
     def val_dataloader(self):
+        if self.val_data is None:
+            return None
         return DataLoader(self.val_data, batch_size=self.args.batch_size, shuffle=False, **self.kwargs)
 
     def test_dataloader(self):
@@ -73,13 +90,13 @@ class ARLDM(pl.LightningModule):
     def __init__(self, args: DictConfig, steps_per_epoch=1):
         super(ARLDM, self).__init__()
         self.args = args
-        self.steps_per_epoch = steps_per_epoch
+        self.steps_per_epoch = int(steps_per_epoch)
         """
             Configurations
         """
         self.task = args.task
 
-        if args.mode == 'sample':
+        if args.mode == 'sample' or args.mode == 'custom_sample':
             if args.scheduler == "pndm":
                 self.scheduler = PNDMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
                                                skip_prk_steps=True)
@@ -129,11 +146,11 @@ class ARLDM(pl.LightningModule):
         # for name, param in self.text_encoder.named_parameters():
         #     param.data = param.data.half()
 
-        self.modal_type_embeddings = nn.Embedding(2, 768)
+        self.modal_type_embeddings = nn.Embedding(6, 768)
         self.time_embeddings = nn.Embedding(5, 768)
         self.mm_encoder = blip_feature_extractor(
-            pretrained='https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_base.pth',
-            image_size=224, vit='base')
+            pretrained='https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large.pth',
+            image_size=224, vit='large')
         self.mm_encoder.text_encoder.resize_token_embeddings(args.get(args.dataset).blip_embedding_tokens)
         # for name, param in self.mm_encoder.named_parameters():
         #     param.data = param.data.half()
@@ -147,16 +164,27 @@ class ARLDM(pl.LightningModule):
 
         # Freeze vae and unet
         self.freeze_params(self.vae.parameters())
+        # for name, param in self.unet.named_parameters():
+        #     print(name)
         if args.freeze_resnet:
             self.freeze_params([p for n, p in self.unet.named_parameters() if "attentions" not in n])
+            self.unfreeze_params([p for n, p in self.unet.named_parameters() if "up_blocks" in n])
 
         if args.freeze_blip and hasattr(self, "mm_encoder"):
             self.freeze_params(self.mm_encoder.parameters())
             self.unfreeze_params(self.mm_encoder.text_encoder.embeddings.word_embeddings.parameters())
+            # self.mm_encoder = self.mm_encoder.half()
 
         if args.freeze_clip and hasattr(self, "text_encoder"):
             self.freeze_params(self.text_encoder.parameters())
             self.unfreeze_params(self.text_encoder.text_model.embeddings.token_embedding.parameters())
+            # self.text_encoder = self.text_encoder.half()
+
+
+    @staticmethod
+    def load_model_fp16(params):
+        for param in params:
+            param.data = param.data.half()
 
     @staticmethod
     def freeze_params(params):
@@ -169,7 +197,8 @@ class ARLDM(pl.LightningModule):
             param.requires_grad = True
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.args.init_lr, weight_decay=1e-4)
+        # optimizer = torch.optim.AdamW(self.parameters(), lr=self.args.init_lr, weight_decay=1e-4)
+        optimizer = bnb.optim.AdamW8bit(self.parameters(), lr=self.args.init_lr, weight_decay=1e-4)
         scheduler = LinearWarmupCosineAnnealingLR(optimizer,
                                                   warmup_epochs=self.args.warmup_epochs * self.steps_per_epoch,
                                                   max_epochs=self.args.max_epochs * self.steps_per_epoch)
@@ -284,9 +313,11 @@ class ARLDM(pl.LightningModule):
         attention_mask = torch.cat([uncond_attention_mask, attention_mask], dim=0)
 
         attention_mask = attention_mask.reshape(2, B, V, (src_V + 1) * S)
+
         images = list()
         for i in range(V):
             encoder_hidden_states = encoder_hidden_states.reshape(2, B, V, (src_V + 1) * S, -1)
+
             new_image = self.diffusion(encoder_hidden_states[:, :, i].reshape(2 * B, (src_V + 1) * S, -1),
                                        attention_mask[:, :, i].reshape(2 * B, (src_V + 1) * S),
                                        512, 512, self.args.num_inference_steps, self.args.guidance_scale, 0.0)
@@ -331,7 +362,6 @@ class ARLDM(pl.LightningModule):
     def diffusion(self, encoder_hidden_states, attention_mask, height, width, num_inference_steps, guidance_scale, eta):
         latents = torch.randn((encoder_hidden_states.shape[0] // 2, self.unet.in_channels, height // 8, width // 8),
                               device=self.device)
-
         # set timesteps
         accepts_offset = "offset" in set(inspect.signature(self.scheduler.set_timesteps).parameters.keys())
         extra_set_kwargs = {}
@@ -399,14 +429,15 @@ class ARLDM(pl.LightningModule):
 def train(args: DictConfig) -> None:
     dataloader = LightningDataset(args)
     dataloader.setup('fit')
-    model = ARLDM(args, steps_per_epoch=dataloader.get_length_of_train_dataloader())
+    model = ARLDM(args, steps_per_epoch=dataloader.get_length_of_train_dataloader() / (args.batch_size * len(args.gpu_ids)))
 
     logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=os.path.join(args.ckpt_dir, args.run_name),
-        save_top_k=0,
-        save_last=True
+        save_top_k=-1,
+        every_n_epochs=1,
+        filename='{epoch}-{step}',
     )
 
     lr_monitor = LearningRateMonitor(logging_interval='step')
@@ -421,16 +452,54 @@ def train(args: DictConfig) -> None:
         logger=logger,
         log_every_n_steps=1,
         callbacks=callback_list,
-        # strategy=DDPStrategy(find_unused_parameters=False),
-        strategy='fsdp',
+        strategy=DDPStrategy(find_unused_parameters=False),
         precision=16,
+        num_sanity_val_steps=0,
+        gradient_clip_val=1.0
+    )
+    trainer.fit(model, dataloader, ckpt_path=args.train_model_file)
+
+
+def adapt(args: DictConfig) -> None:
+    dataloader = LightningDataset(args)
+    dataloader.setup('adapt')
+    # model = ARLDM(args, steps_per_epoch=dataloader.get_length_of_train_dataloader() / (args.batch_size * len(args.gpu_ids)))
+    model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False, steps_per_epoch=dataloader.get_length_of_train_dataloader() / (args.batch_size * len(args.gpu_ids)))
+
+    logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
+
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=os.path.join(args.ckpt_dir, args.run_name),
+        save_top_k=-1,
+        every_n_epochs=25,
+        filename='{epoch}-{step}',
+        save_weights_only=False
+    )
+
+    lr_monitor = LearningRateMonitor(logging_interval='step')
+
+    callback_list = [lr_monitor, checkpoint_callback]
+
+    trainer = pl.Trainer(
+        accelerator='gpu',
+        devices=args.gpu_ids,
+        max_epochs=args.max_epochs,
+        benchmark=True,
+        logger=logger,
+        log_every_n_steps=1,
+        callbacks=callback_list,
+        strategy=DDPStrategy(find_unused_parameters=False),
+        precision=16,
+        num_sanity_val_steps=0,
+        gradient_clip_val=1.0,
+        limit_val_batches=0.0,
     )
     trainer.fit(model, dataloader, ckpt_path=args.train_model_file)
 
 
 def sample(args: DictConfig) -> None:
     assert args.test_model_file is not None, "test_model_file cannot be None"
-    assert args.gpu_ids == 1 or len(args.gpu_ids) == 1, "Only one GPU is supported in test mode"
+    # assert args.gpu_ids == 1 or len(args.gpu_ids) == 1, "Only one GPU is supported in test mode"
     dataloader = LightningDataset(args)
     dataloader.setup('test')
     model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
@@ -439,7 +508,9 @@ def sample(args: DictConfig) -> None:
         accelerator='gpu',
         devices=args.gpu_ids,
         max_epochs=-1,
-        benchmark=True
+        benchmark=True,
+        strategy=DDPStrategy(find_unused_parameters=False),
+        precision=16
     )
     predictions = predictor.predict(model, dataloader)
     images = [elem for sublist in predictions for elem in sublist[0]]
@@ -458,6 +529,32 @@ def sample(args: DictConfig) -> None:
         print('FID: {}'.format(fid))
 
 
+def custom_sample(args: DictConfig) -> None:
+    assert args.test_model_file is not None, "test_model_file cannot be None"
+    # assert args.gpu_ids == 1 or len(args.gpu_ids) == 1, "Only one GPU is supported in test mode"
+    dataloader = LightningDataset(args)
+    dataloader.setup('custom')
+    model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
+
+    predictor = pl.Trainer(
+        accelerator='gpu',
+        devices=args.gpu_ids,
+        max_epochs=-1,
+        benchmark=True,
+        strategy=DDPStrategy(find_unused_parameters=False),
+        precision=16
+    )
+    predictions = predictor.predict(model, dataloader)
+    images = [elem for sublist in predictions for elem in sublist[0]]
+    if not os.path.exists(args.sample_output_dir):
+        try:
+            os.mkdir(args.sample_output_dir)
+        except:
+            pass
+    for i, image in enumerate(images):
+        image.save(os.path.join(args.sample_output_dir, '{:04d}.png'.format(i)))
+
+
 @hydra.main(config_path=".", config_name="config")
 def main(args: DictConfig) -> None:
     pl.seed_everything(args.seed)
@@ -468,6 +565,10 @@ def main(args: DictConfig) -> None:
         train(args)
     elif args.mode == 'sample':
         sample(args)
+    elif args.mode == 'custom_sample':
+        custom_sample(args)
+    elif args.mode == 'adapt':
+        adapt(args)
 
 
 if __name__ == '__main__':

@@ -1,4 +1,6 @@
 import random
+import hydra
+import pytorch_lightning as pl
 
 import cv2
 import h5py
@@ -7,6 +9,10 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
 from transformers import CLIPTokenizer
+from tqdm import tqdm
+from torch.utils.data import DataLoader
+import os
+import matplotlib.pyplot as plt
 
 from models.blip_override.blip import init_tokenizer
 
@@ -25,7 +31,7 @@ class StoryDataset(Dataset):
 
         self.augment = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize([512, 512]),
+            transforms.Resize([256, 256]),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5])
         ])
@@ -60,6 +66,16 @@ class StoryDataset(Dataset):
             idx = random.randint(0, 4)
             images.append(im[idx * 128: (idx + 1) * 128])
 
+        # if self.subset == 'test':
+        #     # Visualize the first ground truth image in the batch before transformation
+        #     plt.figure(figsize=(15, 3))  # Adjust the figsize as needed
+        #     for i, ground_truth_image in enumerate(images):
+        #         plt.subplot(1, len(images), i + 1)
+        #         plt.imshow(ground_truth_image)  # Convert from BGR to RGB
+        #         plt.title(f'Image {i + 1}')
+        #         plt.axis('off')  # To turn off axis labels
+        #     plt.show()
+
         source_images = torch.stack([self.blip_image_processor(im) for im in images])
         images = images[1:] if self.args.task == 'continuation' else images
         images = torch.stack([self.augment(im) for im in images]) \
@@ -85,24 +101,107 @@ class StoryDataset(Dataset):
             return_tensors="pt",
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
+        # for img_idx in range(len(images)):
+        #     caption = captions[img_idx].tolist()
+        #     caption_text = self.clip_tokenizer.decode(caption, skip_special_tokens=True)
+        #     print(caption_text)
         return images, captions, attention_mask, source_images, source_caption, source_attention_mask
+    """
+    images: [5, 3, 256, 256]
+    captions: [5, 91]
+    attention_mask: [5, 91]
+    source_images: [5, 3, 224, 224]
+    source_caption: [5, 91]
+    source_attention_mask: [5, 91]
+    
+    """
 
     def __len__(self):
         if not hasattr(self, 'h5'):
             self.open_h5()
-        return len(self.h5['text'])
+        length = len(self.h5['text'])
+        return length
+        # return 10
+
+
+class CustomStory(StoryDataset):
+    def __init__(self, args, subset='test'):
+        super(CustomStory, self).__init__(subset, args=args)
+        self.prompts = self.load_prompts(self.args.custom_prompts)
+
+    def load_prompts(self, prompts_file):
+        with open(prompts_file, 'r') as f:
+            lines = f.read().strip().split('\n')
+            prompts = [lines[i:i + 5] for i in range(0, len(lines), 6)]  # 6 due to 5 lines and 1 empty line
+        return prompts
+
+    def __len__(self):
+        return len(self.prompts)
+
+    def __getitem__(self, index):
+        # Use zeros as placeholders for images
+        images = torch.zeros([5, 3, 256, 256])
+        source_images = torch.zeros([5, 3, 224, 224])
+
+        # Use the loaded prompts instead of the text from h5
+        texts = self.prompts[index]
+
+        # Tokenize caption using CLIPTokenizer
+        tokenized = self.clip_tokenizer(
+            texts[1:] if self.args.task == 'continuation' else texts,
+            padding="max_length",
+            max_length=self.max_length,
+            truncation=False,
+            return_tensors="pt",
+        )
+        captions, attention_mask = tokenized['input_ids'], tokenized['attention_mask']
+
+        # Tokenize caption using blip tokenizer
+        tokenized = self.blip_tokenizer(
+            texts,
+            padding="max_length",
+            max_length=self.max_length,
+            truncation=False,
+            return_tensors="pt",
+        )
+        source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
+
+        return images, captions, attention_mask, source_images, source_caption, source_attention_mask
+
+
+@hydra.main(config_path="..", config_name="config")
+def test_case(args):
+    pl.seed_everything(args.seed)
+
+    story_dataset = StoryDataset('train', args=args)
+    story_dataloader = DataLoader(story_dataset, batch_size=1, shuffle=False, num_workers=8)
+
+    # Create destination directory
+    dst_folder = '../ckpts/output_src_img'
+    if not os.path.exists(dst_folder):
+        os.makedirs(dst_folder)
+
+    # Open a txt file for writing
+    with open(os.path.join(dst_folder, 'captions.txt'), 'w') as txt_file:
+        for batch_idx, (images, captions, _, _, source_captions, _) in enumerate(
+                tqdm(story_dataloader, total=len(story_dataloader))):
+            images = images.squeeze(0)
+            captions = captions.squeeze(0)
+
+            # Loop through each image in the batch and save it to the destination directory
+            for img_idx, img in enumerate(images):
+                img_path = os.path.join(dst_folder, f'image_{batch_idx}_{img_idx}.jpg')
+                img_pil = transforms.ToPILImage()(img)  # Convert back to PIL Image
+                img_pil.save(img_path)
+
+                # Write the caption to the txt file
+                caption = captions[img_idx].tolist()
+                caption_text = story_dataset.clip_tokenizer.decode(caption, skip_special_tokens=True)
+                txt_file.write(str(img_idx) + caption_text + '\n')
+            # add a blank line between each batch
+            txt_file.write('\n')
 
 
 if __name__ == "__main__":
-    import argparse
-    import yaml
-    from tqdm import tqdm
-    dict_config = yaml.load(open('../config.yaml', 'r'), Loader=yaml.FullLoader)
-    args = argparse.Namespace()
-    for k, v in dict_config.items():
-        setattr(args, k, v)
-    story_dataset = StoryDataset('train', args=args)
-    from torch.utils.data import DataLoader
-    story_dataloader = DataLoader(story_dataset, batch_size=4, shuffle=True, num_workers=8)
-    for batch in tqdm(story_dataloader, total=len(story_dataloader)):
-        pass
+    test_case()
+

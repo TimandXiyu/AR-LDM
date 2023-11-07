@@ -8,3 +8,8 @@
 events*
 *yaml
 *.log
+*.png
+*.jpg
+*.zip
+captions.txt
+*.pth
