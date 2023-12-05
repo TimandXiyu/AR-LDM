@@ -25,8 +25,8 @@ def convert_torch_to_lightning(torch_checkpoint_path, lightning_checkpoint_path,
 if __name__ == "__main__":
     # model = torch.load("/media/mldadmin/home/s123mdg35_05/ar-ldm/ckpts/flintstones_repro_v2/last.ckpt")
     # model_vanilla = torch.load("/media/mldadmin/home/s123mdg35_05/ar-ldm/ckpts/flintstones_official_ckpt/flintstones.pth")
-    src_path = '/rootfs/home/xiasong/arldm_xiyu/ckpts/flintstones_official_ckpt/flintstones.pth'
-    dst_path = '/rootfs/home/xiasong/arldm_xiyu/ckpts/flintstones_official_ckpt/flintstones.ckpt'
+    src_path = r'D:\AR-LDM\ckpts\flintstones_official_ckpt\flintstones.pth'
+    dst_path = r'D:\AR-LDM\ckpts\flintstones_official_ckpt\flintstones.ckpt'
     last_epoch = 0
     last_global_step = 0
     convert_torch_to_lightning(src_path, dst_path, last_epoch, last_global_step)

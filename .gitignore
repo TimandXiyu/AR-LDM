@@ -13,3 +13,5 @@ events*
 *.zip
 captions.txt
 *.pth
+*.ckpt
+*.npz

@@ -28,13 +28,6 @@ from pytorch_lightning.callbacks import TQDMProgressBar
 import bitsandbytes as bnb
 
 
-# class MyProgressBar(TQDMProgressBar):
-#     def on_train_batch_end(self, trainer, pl_module):
-#         lr = trainer.optimizers[0].param_groups[0]['lr']
-#         self.main_progress_bar.set_postfix(lr=f"{lr:.6f}", refresh=True)
-#         super().on_train_batch_end(trainer, pl_module)
-
-
 class LightningDataset(pl.LightningDataModule):
     def __init__(self, args: DictConfig):
         super(LightningDataset, self).__init__()
@@ -135,7 +128,10 @@ class ARLDM(pl.LightningModule):
 
         self.text_encoder = CLIPTextModel.from_pretrained('runwayml/stable-diffusion-v1-5',
                                                           subfolder="text_encoder")
-        self.text_encoder.resize_token_embeddings(args.get(args.dataset).clip_embedding_tokens)
+        if args.get(args.dataset).adapt_tokens != 'empty' and (args.mode == 'custom_sample' or args.mode == 'sample'):
+            self.text_encoder.resize_token_embeddings(args.get(args.dataset).clip_embedding_tokens + len(args.get(args.dataset).adapt_tokens))
+        else:
+            self.text_encoder.resize_token_embeddings(args.get(args.dataset).clip_embedding_tokens)
         # resize_position_embeddings
         old_embeddings = self.text_encoder.text_model.embeddings.position_embedding
         new_embeddings = self.text_encoder._get_resized_embeddings(old_embeddings, self.max_length)
@@ -143,17 +139,16 @@ class ARLDM(pl.LightningModule):
         self.text_encoder.config.max_position_embeddings = self.max_length
         self.text_encoder.max_position_embeddings = self.max_length
         self.text_encoder.text_model.embeddings.position_ids = torch.arange(self.max_length).expand((1, -1))
-        # for name, param in self.text_encoder.named_parameters():
-        #     param.data = param.data.half()
 
         self.modal_type_embeddings = nn.Embedding(6, 768)
         self.time_embeddings = nn.Embedding(5, 768)
         self.mm_encoder = blip_feature_extractor(
             pretrained='https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large.pth',
             image_size=224, vit='large')
-        self.mm_encoder.text_encoder.resize_token_embeddings(args.get(args.dataset).blip_embedding_tokens)
-        # for name, param in self.mm_encoder.named_parameters():
-        #     param.data = param.data.half()
+        if args.get(args.dataset).adapt_tokens != 'empty' and (args.mode == 'custom_sample' or args.mode == 'sample'):
+            self.mm_encoder.text_encoder.resize_token_embeddings(args.get(args.dataset).blip_embedding_tokens + len(args.get(args.dataset).adapt_tokens))
+        else:
+            self.mm_encoder.text_encoder.resize_token_embeddings(args.get(args.dataset).blip_embedding_tokens)
 
         self.vae = AutoencoderKL.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="vae")
         # for name, param in self.vae.named_parameters():
@@ -162,10 +157,7 @@ class ARLDM(pl.LightningModule):
         self.noise_scheduler = DDPMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
                                              num_train_timesteps=1000)
 
-        # Freeze vae and unet
         self.freeze_params(self.vae.parameters())
-        # for name, param in self.unet.named_parameters():
-        #     print(name)
         if args.freeze_resnet:
             self.freeze_params([p for n, p in self.unet.named_parameters() if "attentions" not in n])
             self.unfreeze_params([p for n, p in self.unet.named_parameters() if "up_blocks" in n])
@@ -173,18 +165,10 @@ class ARLDM(pl.LightningModule):
         if args.freeze_blip and hasattr(self, "mm_encoder"):
             self.freeze_params(self.mm_encoder.parameters())
             self.unfreeze_params(self.mm_encoder.text_encoder.embeddings.word_embeddings.parameters())
-            # self.mm_encoder = self.mm_encoder.half()
 
         if args.freeze_clip and hasattr(self, "text_encoder"):
             self.freeze_params(self.text_encoder.parameters())
             self.unfreeze_params(self.text_encoder.text_model.embeddings.token_embedding.parameters())
-            # self.text_encoder = self.text_encoder.half()
-
-
-    @staticmethod
-    def load_model_fp16(params):
-        for param in params:
-            param.data = param.data.half()
 
     @staticmethod
     def freeze_params(params):
@@ -195,6 +179,19 @@ class ARLDM(pl.LightningModule):
     def unfreeze_params(params):
         for param in params:
             param.requires_grad = True
+
+    def add_adapt_token(self):
+        new_token = self.args.get(self.args.dataset).adapt_tokens
+        print("Adding new tokens: ", new_token)
+        self.clip_tokenizer.add_tokens(new_token)
+        self.blip_tokenizer.add_tokens(new_token)
+        # print clip and blip vocab size
+        print("Clip original vocab size: ", len(self.clip_tokenizer))
+        print("Blip original vocab size: ", len(self.blip_tokenizer))
+        self.text_encoder.resize_token_embeddings(self.args.get(self.args.dataset).clip_embedding_tokens + len(new_token))
+        self.mm_encoder.text_encoder.resize_token_embeddings(self.args.get(self.args.dataset).blip_embedding_tokens + len(new_token))
+        print("Clip new vocab size: ", len(self.clip_tokenizer))
+        print("Blip new vocab size: ", len(self.blip_tokenizer))
 
     def configure_optimizers(self):
         # optimizer = torch.optim.AdamW(self.parameters(), lr=self.args.init_lr, weight_decay=1e-4)
@@ -463,15 +460,15 @@ def train(args: DictConfig) -> None:
 def adapt(args: DictConfig) -> None:
     dataloader = LightningDataset(args)
     dataloader.setup('adapt')
-    # model = ARLDM(args, steps_per_epoch=dataloader.get_length_of_train_dataloader() / (args.batch_size * len(args.gpu_ids)))
     model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False, steps_per_epoch=dataloader.get_length_of_train_dataloader() / (args.batch_size * len(args.gpu_ids)))
 
+    model.add_adapt_token()
     logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=os.path.join(args.ckpt_dir, args.run_name),
         save_top_k=-1,
-        every_n_epochs=25,
+        every_n_epochs=50,
         filename='{epoch}-{step}',
         save_weights_only=False
     )
@@ -494,6 +491,21 @@ def adapt(args: DictConfig) -> None:
         gradient_clip_val=1.0,
         limit_val_batches=0.0,
     )
+
+    # trainer = pl.Trainer(
+    #     # accelerator='gpu',  # Commented out for CPU training
+    #     # devices=1,  # Default is CPU if not specified
+    #     max_epochs=args.max_epochs,
+    #     benchmark=False,  # Set to False because benchmarking is GPU-specific
+    #     logger=logger,
+    #     log_every_n_steps=1,
+    #     callbacks=callback_list,
+    #     # strategy=DDPStrategy(find_unused_parameters=False),  # Commented out for CPU training
+    #     precision=32,  # Set to 32 for full precision on CPU
+    #     num_sanity_val_steps=0,
+    #     gradient_clip_val=1.0,
+    #     limit_val_batches=0.0
+    # )
     trainer.fit(model, dataloader, ckpt_path=args.train_model_file)
 
 
@@ -513,14 +525,14 @@ def sample(args: DictConfig) -> None:
         precision=16
     )
     predictions = predictor.predict(model, dataloader)
-    images = [elem for sublist in predictions for elem in sublist[0]]
-    if not os.path.exists(args.sample_output_dir):
-        try:
-            os.mkdir(args.sample_output_dir)
-        except:
-            pass
-    for i, image in enumerate(images):
-        image.save(os.path.join(args.sample_output_dir, '{:04d}.png'.format(i)))
+    # images = [elem for sublist in predictions for elem in sublist[0]]
+    # if not os.path.exists(args.sample_output_dir):
+    #     try:
+    #         os.mkdir(args.sample_output_dir)
+    #     except:
+    #         pass
+    # for i, image in enumerate(images):
+    #     image.save(os.path.join(args.sample_output_dir, '{:04d}.png'.format(i)))
 
     if args.calculate_fid:
         ori = np.array([elem for sublist in predictions for elem in sublist[1]])
@@ -547,12 +559,18 @@ def custom_sample(args: DictConfig) -> None:
     predictions = predictor.predict(model, dataloader)
     images = [elem for sublist in predictions for elem in sublist[0]]
     if not os.path.exists(args.sample_output_dir):
-        try:
-            os.mkdir(args.sample_output_dir)
-        except:
-            pass
+        os.makedirs(args.sample_output_dir, exist_ok=True)
+
+        # Create a folder for every 5 images and save them sequentially
     for i, image in enumerate(images):
-        image.save(os.path.join(args.sample_output_dir, '{:04d}.png'.format(i)))
+        # Determine the folder name by the index of the image
+        folder_name = os.path.join(args.sample_output_dir, f'{i // 5:04d}')
+        # Create the folder if it doesn't exist
+        if not os.path.exists(folder_name):
+            os.makedirs(folder_name, exist_ok=True)
+        # Save the image in the corresponding folder
+        image_path = os.path.join(folder_name, f'{i % 5:04d}.png')
+        image.save(image_path)
 
 
 @hydra.main(config_path=".", config_name="config")

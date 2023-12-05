@@ -8,6 +8,7 @@ import h5py
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import random
 
 
 def main(args):
@@ -48,8 +49,8 @@ def main(args):
     f.close()
 
 
-def main_adaptation(args):
-    sentences = ['the police man is telling something to fred who\'s standing in front of his car outside.']
+def main_adaptation(args, N):
+    sentences = ['A man hiding his face with long pink hat sits on the roof of a car.']
     splits = json.load(open(os.path.join(args.data_dir, 'train-val-test_split.json'), 'r'))
     train_ids, val_ids, test_ids = splits["train"], splits["val"], splits["test"]
     all_ids = train_ids + val_ids + test_ids
@@ -61,7 +62,12 @@ def main_adaptation(args):
 
     f = h5py.File(args.save_path, "w")
     ids = [i for i in all_ids if i in followings and len(followings[i]) == 4]
-    ids = [i for i in ids if any(sentence in descriptions[i] for sentence in sentences)]
+    filtered_ids = [i for i in ids if any(sentence in descriptions[i] for sentence in sentences)]
+
+    N = min(N, len(ids) - len(filtered_ids))  # Ensure N is not larger than available samples
+    random_ids = random.sample([i for i in ids if i not in filtered_ids], N)
+
+    ids = filtered_ids + random_ids
     length = len(ids)
 
     # check file exist in ids
@@ -87,22 +93,27 @@ def main_adaptation(args):
             images[j][i] = img
             txt.append(descriptions[globalID])
 
-        fig, axs = plt.subplots(1, 5, figsize=(15, 3))  # Adjust the figure size if needed
-        for j in range(5):
-            full_img = cv2.imdecode(images[j][i], cv2.IMREAD_COLOR)
-            cropped_img = full_img[:128, :]
-            axs[j].imshow(cropped_img)
-            axs[j].axis('off')
-        plt.show()
-
         annotation = '|'.join([t.replace('\n', '').replace('\t', '').strip() for t in txt])
-        text[i] = annotation
 
-        # Ask for updated annotation
-        # updated_annotation = input(
-        #     f"Original annotation: {annotation}\nType the updated annotation (or press Enter to keep the original): ")
-        # if updated_annotation:
-        #     text[i] = updated_annotation
+        if item in filtered_ids:
+            # Display images and prompt for updated annotation
+            fig, axs = plt.subplots(1, 5, figsize=(15, 3))  # Adjust the figure size if needed
+            for j in range(5):
+                full_img = cv2.imdecode(images[j][i], cv2.IMREAD_COLOR)
+                cropped_img = full_img[:128, :]  # Modify this line if a different cropping is needed
+                axs[j].imshow(cropped_img)
+                axs[j].axis('off')
+            plt.show()
+
+            # Request user input for updated annotation
+            updated_annotation = input(
+                f"Original annotation: {annotation}\nType the updated annotation (or press Enter to keep the original): ")
+            if updated_annotation:
+                annotation = updated_annotation
+
+            text[i] = annotation
+        else:
+            text[i] = annotation
 
     f.close()
 
@@ -112,4 +123,4 @@ if __name__ == '__main__':
     parser.add_argument('--data_dir', type=str, required=True, help='flintstones data directory')
     parser.add_argument('--save_path', type=str, required=True, help='path to save hdf5')
     args = parser.parse_args()
-    main_adaptation(args)
+    main_adaptation(args, 50)

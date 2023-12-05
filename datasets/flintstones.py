@@ -39,9 +39,9 @@ class StoryDataset(Dataset):
         self.max_length = args.get(args.dataset).max_length
         self.clip_tokenizer = CLIPTokenizer.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="tokenizer")
         self.blip_tokenizer = init_tokenizer()
-        msg = self.clip_tokenizer.add_tokens(list(args.get(args.dataset).new_tokens))
+        msg = self.clip_tokenizer.add_tokens(list(args.get(args.dataset).new_tokens), special_tokens=True)
         print("clip {} new tokens added".format(msg))
-        msg = self.blip_tokenizer.add_tokens(list(args.get(args.dataset).new_tokens))
+        msg = self.blip_tokenizer.add_tokens(list(args.get(args.dataset).new_tokens), special_tokens=True)
         print("blip {} new tokens added".format(msg))
 
         self.blip_image_processor = transforms.Compose([
@@ -65,16 +65,6 @@ class StoryDataset(Dataset):
             im = cv2.imdecode(im, cv2.IMREAD_COLOR)
             idx = random.randint(0, 4)
             images.append(im[idx * 128: (idx + 1) * 128])
-
-        # if self.subset == 'test':
-        #     # Visualize the first ground truth image in the batch before transformation
-        #     plt.figure(figsize=(15, 3))  # Adjust the figsize as needed
-        #     for i, ground_truth_image in enumerate(images):
-        #         plt.subplot(1, len(images), i + 1)
-        #         plt.imshow(ground_truth_image)  # Convert from BGR to RGB
-        #         plt.title(f'Image {i + 1}')
-        #         plt.axis('off')  # To turn off axis labels
-        #     plt.show()
 
         source_images = torch.stack([self.blip_image_processor(im) for im in images])
         images = images[1:] if self.args.task == 'continuation' else images
@@ -121,7 +111,7 @@ class StoryDataset(Dataset):
             self.open_h5()
         length = len(self.h5['text'])
         return length
-        # return 10
+        # return 8
 
 
 class CustomStory(StoryDataset):
