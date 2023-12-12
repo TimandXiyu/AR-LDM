@@ -151,16 +151,14 @@ class ARLDM(pl.LightningModule):
             self.mm_encoder.text_encoder.resize_token_embeddings(args.get(args.dataset).blip_embedding_tokens)
 
         self.vae = AutoencoderKL.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="vae")
-        # for name, param in self.vae.named_parameters():
-        #     param.data = param.data.half()
-        self.unet = UNet2DConditionModel.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="unet")
+        self.unet = UNet2DConditionModel.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="unet", tuning=args.unet_model.tuning)
         self.noise_scheduler = DDPMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
                                              num_train_timesteps=1000)
 
         self.freeze_params(self.vae.parameters())
         if args.freeze_resnet:
-            self.freeze_params([p for n, p in self.unet.named_parameters() if "attentions" not in n])
-            self.unfreeze_params([p for n, p in self.unet.named_parameters() if "up_blocks" in n])
+            self.freeze_params(self.unet.parameters())
+            self.unfreeze_params([p for n, p in self.unet.named_parameters() if "lora" in n])
 
         if args.freeze_blip and hasattr(self, "mm_encoder"):
             self.freeze_params(self.mm_encoder.parameters())
@@ -169,6 +167,11 @@ class ARLDM(pl.LightningModule):
         if args.freeze_clip and hasattr(self, "text_encoder"):
             self.freeze_params(self.text_encoder.parameters())
             self.unfreeze_params(self.text_encoder.text_model.embeddings.token_embedding.parameters())
+
+        # print layer names and sizes and requires_grad
+        for name, param in self.named_parameters():
+            print(name, param.size(), param.requires_grad)
+
 
     @staticmethod
     def freeze_params(params):
@@ -433,7 +436,7 @@ def train(args: DictConfig) -> None:
     checkpoint_callback = ModelCheckpoint(
         dirpath=os.path.join(args.ckpt_dir, args.run_name),
         save_top_k=-1,
-        every_n_epochs=1,
+        every_n_epochs=args.unet_model.save_freq,
         filename='{epoch}-{step}',
     )
 
@@ -492,20 +495,6 @@ def adapt(args: DictConfig) -> None:
         limit_val_batches=0.0,
     )
 
-    # trainer = pl.Trainer(
-    #     # accelerator='gpu',  # Commented out for CPU training
-    #     # devices=1,  # Default is CPU if not specified
-    #     max_epochs=args.max_epochs,
-    #     benchmark=False,  # Set to False because benchmarking is GPU-specific
-    #     logger=logger,
-    #     log_every_n_steps=1,
-    #     callbacks=callback_list,
-    #     # strategy=DDPStrategy(find_unused_parameters=False),  # Commented out for CPU training
-    #     precision=32,  # Set to 32 for full precision on CPU
-    #     num_sanity_val_steps=0,
-    #     gradient_clip_val=1.0,
-    #     limit_val_batches=0.0
-    # )
     trainer.fit(model, dataloader, ckpt_path=args.train_model_file)
 
 

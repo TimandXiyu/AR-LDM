@@ -13,7 +13,7 @@
 # limitations under the License.
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Literal
 
 import torch
 import torch.nn.functional as F
@@ -24,6 +24,7 @@ from diffusers.modeling_utils import ModelMixin
 from diffusers.models.embeddings import ImagePositionalEmbeddings
 from diffusers.utils import BaseOutput
 from diffusers.utils.import_utils import is_xformers_available
+import loralib as lora
 
 
 @dataclass
@@ -98,6 +99,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             num_vector_embeds: Optional[int] = None,
             activation_fn: str = "geglu",
             num_embeds_ada_norm: Optional[int] = None,
+            tuning: str = None
     ):
         super().__init__()
         self.num_attention_heads = num_attention_heads
@@ -151,6 +153,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     activation_fn=activation_fn,
                     num_embeds_ada_norm=num_embeds_ada_norm,
                     attention_bias=attention_bias,
+                    tuning=tuning
                 )
                 for d in range(num_layers)
             ]
@@ -341,6 +344,7 @@ class BasicTransformerBlock(nn.Module):
             activation_fn: str = "geglu",
             num_embeds_ada_norm: Optional[int] = None,
             attention_bias: bool = False,
+            tuning: str = "lora"
     ):
         super().__init__()
         self.attn1 = CrossAttention(
@@ -358,6 +362,8 @@ class BasicTransformerBlock(nn.Module):
             dim_head=attention_head_dim,
             dropout=dropout,
             bias=attention_bias,
+            tuning=tuning,
+            lora_mode='qkv'
         )  # is self-attn if context is none
 
         # layer norms
@@ -442,6 +448,8 @@ class CrossAttention(nn.Module):
             dim_head: int = 64,
             dropout: float = 0.0,
             bias=False,
+            tuning=None,
+            lora_mode='qkv'
     ):
         super().__init__()
         inner_dim = dim_head * heads
@@ -455,9 +463,18 @@ class CrossAttention(nn.Module):
         self._slice_size = None
         self._use_memory_efficient_attention_xformers = False
 
-        self.to_q = nn.Linear(query_dim, inner_dim, bias=bias)
-        self.to_k = nn.Linear(cross_attention_dim, inner_dim, bias=bias)
-        self.to_v = nn.Linear(cross_attention_dim, inner_dim, bias=bias)
+        if tuning is None:
+            self.to_q = nn.Linear(query_dim, inner_dim, bias=bias)
+            self.to_k = nn.Linear(cross_attention_dim, inner_dim, bias=bias)
+            self.to_v = nn.Linear(cross_attention_dim, inner_dim, bias=bias)
+        elif tuning == 'lora':
+            assert lora_mode is not None, 'lora mode must be specified'
+            if 'q' in lora_mode:
+                self.to_q = lora.Linear(query_dim, inner_dim, bias=bias, r=16)
+            if 'k' in lora_mode:
+                self.to_k = lora.Linear(cross_attention_dim, inner_dim, bias=bias, r=16)
+            if 'v' in lora_mode:
+                self.to_v = lora.Linear(cross_attention_dim, inner_dim, bias=bias, r=16)
 
         self.to_out = nn.ModuleList([])
         self.to_out.append(nn.Linear(inner_dim, query_dim))

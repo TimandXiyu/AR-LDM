@@ -32,6 +32,7 @@ def get_down_block(
         resnet_groups=None,
         cross_attention_dim=None,
         downsample_padding=None,
+        tuning=None
 ):
     down_block_type = down_block_type[7:] if down_block_type.startswith("UNetRes") else down_block_type
     if down_block_type == "DownBlock2D":
@@ -74,6 +75,7 @@ def get_down_block(
             downsample_padding=downsample_padding,
             cross_attention_dim=cross_attention_dim,
             attn_num_head_channels=attn_num_head_channels,
+            tuning=tuning
         )
     elif down_block_type == "SkipDownBlock2D":
         return SkipDownBlock2D(
@@ -137,6 +139,7 @@ def get_up_block(
         attn_num_head_channels,
         resnet_groups=None,
         cross_attention_dim=None,
+        tuning=None
 ):
     up_block_type = up_block_type[7:] if up_block_type.startswith("UNetRes") else up_block_type
     if up_block_type == "UpBlock2D":
@@ -166,6 +169,7 @@ def get_up_block(
             resnet_groups=resnet_groups,
             cross_attention_dim=cross_attention_dim,
             attn_num_head_channels=attn_num_head_channels,
+            tuning=tuning
         )
     elif up_block_type == "AttnUpBlock2D":
         return AttnUpBlock2D(
@@ -322,11 +326,13 @@ class UNetMidBlock2DCrossAttn(nn.Module):
             attention_type="default",
             output_scale_factor=1.0,
             cross_attention_dim=1280,
+            tuning: str = None,
             **kwargs,
     ):
         super().__init__()
 
         self.attention_type = attention_type
+        self.tuning = tuning
         self.attn_num_head_channels = attn_num_head_channels
         resnet_groups = resnet_groups if resnet_groups is not None else min(in_channels // 4, 32)
 
@@ -356,6 +362,7 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                     num_layers=1,
                     cross_attention_dim=cross_attention_dim,
                     norm_num_groups=resnet_groups,
+                    tuning=tuning
                 )
             )
             resnets.append(
@@ -505,12 +512,14 @@ class CrossAttnDownBlock2D(nn.Module):
             output_scale_factor=1.0,
             downsample_padding=1,
             add_downsample=True,
+            tuning: str = None
     ):
         super().__init__()
         resnets = []
         attentions = []
 
         self.attention_type = attention_type
+        self.tuning = tuning
         self.attn_num_head_channels = attn_num_head_channels
 
         for i in range(num_layers):
@@ -537,6 +546,7 @@ class CrossAttnDownBlock2D(nn.Module):
                     num_layers=1,
                     cross_attention_dim=cross_attention_dim,
                     norm_num_groups=resnet_groups,
+                    tuning=tuning
                 )
             )
         self.attentions = nn.ModuleList(attentions)
@@ -1091,12 +1101,14 @@ class CrossAttnUpBlock2D(nn.Module):
             attention_type="default",
             output_scale_factor=1.0,
             add_upsample=True,
+            tuning: str = None
     ):
         super().__init__()
         resnets = []
         attentions = []
 
         self.attention_type = attention_type
+        self.tuning = tuning
         self.attn_num_head_channels = attn_num_head_channels
 
         for i in range(num_layers):
@@ -1125,6 +1137,7 @@ class CrossAttnUpBlock2D(nn.Module):
                     num_layers=1,
                     cross_attention_dim=cross_attention_dim,
                     norm_num_groups=resnet_groups,
+                    tuning=tuning
                 )
             )
         self.attentions = nn.ModuleList(attentions)
