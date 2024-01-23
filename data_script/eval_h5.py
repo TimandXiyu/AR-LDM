@@ -1,11 +1,17 @@
+"""
+This script aims to eval an existing h5 file to make sure the data is properly generated.
+"""
+import os
+import h5py
+
+
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
-from matplotlib import rcParams
 
 
-class HDF5ImageBatchDisplayer:
+class H5Evaluator:
     def __init__(self, hdf5_file):
         self.hdf5_file = hdf5_file
 
@@ -45,6 +51,7 @@ class HDF5ImageBatchDisplayer:
 
     def read_text(self, batch_index=None):
         with h5py.File(self.hdf5_file, 'r') as hdf:
+            print()
             if batch_index is None:
                 text_data = hdf['train/text'][:]
             else:
@@ -60,14 +67,18 @@ class HDF5ImageBatchDisplayer:
             annotations = [str(annotation, 'utf-8') for annotation in annotations]
 
             for anno in annotations:
-                if "hoopy" in anno or "Hoopy" in anno:
-                    raise ValueError("hoopy in anno")
+                # lower the anno
+                anno = anno.lower()
+                if "hoppy" in anno:
+                    raise ValueError("the annotation contains hoppy")
+                if "pebbles" in anno:
+                    raise ValueError("the annotation contains pebbles")
+                if "bamm bamm" in anno:
+                    raise ValueError("the annotation contains bamm bamm")
             return annotations
 
 
-
 if __name__ == '__main__':
-    hdf5_path = r"D:\AR-LDM\data\remove_hoppy.hdf5"
-    H5Display = HDF5ImageBatchDisplayer(hdf5_path)
+    hdf5_path = "/scratch/users/ntu/xiyu004/ar-ldm/data/flintstones_rare-char_rmeoved.h5"
+    H5Display = H5Evaluator(hdf5_path)
     texts = H5Display.read_text()
-    pass

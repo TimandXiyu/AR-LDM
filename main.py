@@ -25,7 +25,7 @@ from models.blip_override.blip import blip_feature_extractor, init_tokenizer
 from models.diffusers_override.unet_2d_condition import UNet2DConditionModel
 from models.inception import InceptionV3
 from pytorch_lightning.callbacks import TQDMProgressBar
-import bitsandbytes as bnb
+# import bitsandbytes as bnb
 
 
 class LightningDataset(pl.LightningDataModule):
@@ -128,7 +128,7 @@ class ARLDM(pl.LightningModule):
 
         self.text_encoder = CLIPTextModel.from_pretrained('runwayml/stable-diffusion-v1-5',
                                                           subfolder="text_encoder")
-        if args.get(args.dataset).adapt_tokens != 'empty' and (args.mode == 'custom_sample' or args.mode == 'sample'):
+        if args.get(args.dataset).adapt_tokens is not None and (args.mode == 'custom_sample' or args.mode == 'sample'):
             self.text_encoder.resize_token_embeddings(args.get(args.dataset).clip_embedding_tokens + len(args.get(args.dataset).adapt_tokens))
         else:
             self.text_encoder.resize_token_embeddings(args.get(args.dataset).clip_embedding_tokens)
@@ -145,20 +145,21 @@ class ARLDM(pl.LightningModule):
         self.mm_encoder = blip_feature_extractor(
             pretrained='https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large.pth',
             image_size=224, vit='large')
-        if args.get(args.dataset).adapt_tokens != 'empty' and (args.mode == 'custom_sample' or args.mode == 'sample'):
+        if args.get(args.dataset).adapt_tokens is not None and (args.mode == 'custom_sample' or args.mode == 'sample'):
             self.mm_encoder.text_encoder.resize_token_embeddings(args.get(args.dataset).blip_embedding_tokens + len(args.get(args.dataset).adapt_tokens))
         else:
             self.mm_encoder.text_encoder.resize_token_embeddings(args.get(args.dataset).blip_embedding_tokens)
 
         self.vae = AutoencoderKL.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="vae")
-        self.unet = UNet2DConditionModel.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="unet", tuning=args.unet_model.tuning)
+        self.unet = UNet2DConditionModel.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="unet", tuning=args.unet_model.tuning, low_cpu_mem_usage=args.unet_model.low_cpu_mem_usage)
         self.noise_scheduler = DDPMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
                                              num_train_timesteps=1000)
 
         self.freeze_params(self.vae.parameters())
         if args.freeze_resnet:
             self.freeze_params(self.unet.parameters())
-            self.unfreeze_params([p for n, p in self.unet.named_parameters() if "lora" in n])
+            # self.unfreeze_params([p for n, p in self.unet.named_parameters() if "lora" in n])
+            self.unfreeze_params([p for n, p in self.unet.named_parameters() if "attention" in n])
 
         if args.freeze_blip and hasattr(self, "mm_encoder"):
             self.freeze_params(self.mm_encoder.parameters())
@@ -169,8 +170,8 @@ class ARLDM(pl.LightningModule):
             self.unfreeze_params(self.text_encoder.text_model.embeddings.token_embedding.parameters())
 
         # print layer names and sizes and requires_grad
-        for name, param in self.named_parameters():
-            print(name, param.size(), param.requires_grad)
+        # for name, param in self.named_parameters():
+        #     print(name, param.size(), param.requires_grad)
 
 
     @staticmethod
@@ -197,8 +198,8 @@ class ARLDM(pl.LightningModule):
         print("Blip new vocab size: ", len(self.blip_tokenizer))
 
     def configure_optimizers(self):
-        # optimizer = torch.optim.AdamW(self.parameters(), lr=self.args.init_lr, weight_decay=1e-4)
-        optimizer = bnb.optim.AdamW8bit(self.parameters(), lr=self.args.init_lr, weight_decay=1e-4)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.args.init_lr, weight_decay=1e-4)
+        # optimizer = bnb.optim.AdamW8bit(self.parameters(), lr=self.args.init_lr, weight_decay=1e-4)
         scheduler = LinearWarmupCosineAnnealingLR(optimizer,
                                                   warmup_epochs=self.args.warmup_epochs * self.steps_per_epoch,
                                                   max_epochs=self.args.max_epochs * self.steps_per_epoch)
@@ -320,7 +321,7 @@ class ARLDM(pl.LightningModule):
 
             new_image = self.diffusion(encoder_hidden_states[:, :, i].reshape(2 * B, (src_V + 1) * S, -1),
                                        attention_mask[:, :, i].reshape(2 * B, (src_V + 1) * S),
-                                       512, 512, self.args.num_inference_steps, self.args.guidance_scale, 0.0)
+                                       self.args.resolution, self.args.resolution, self.args.num_inference_steps, self.args.guidance_scale, 0.0)
             images += new_image
 
             new_image = torch.stack([self.blip_image_processor(im) for im in new_image]).to(self.device)
@@ -436,7 +437,7 @@ def train(args: DictConfig) -> None:
     checkpoint_callback = ModelCheckpoint(
         dirpath=os.path.join(args.ckpt_dir, args.run_name),
         save_top_k=-1,
-        every_n_epochs=args.unet_model.save_freq,
+        every_n_epochs=args.save_freq,
         filename='{epoch}-{step}',
     )
 
@@ -455,7 +456,8 @@ def train(args: DictConfig) -> None:
         strategy=DDPStrategy(find_unused_parameters=False),
         precision=16,
         num_sanity_val_steps=0,
-        gradient_clip_val=1.0
+        gradient_clip_val=1.0,
+        limit_val_batches=0.0,
     )
     trainer.fit(model, dataloader, ckpt_path=args.train_model_file)
 
@@ -514,20 +516,31 @@ def sample(args: DictConfig) -> None:
         precision=16
     )
     predictions = predictor.predict(model, dataloader)
-    # images = [elem for sublist in predictions for elem in sublist[0]]
-    # if not os.path.exists(args.sample_output_dir):
-    #     try:
-    #         os.mkdir(args.sample_output_dir)
-    #     except:
-    #         pass
-    # for i, image in enumerate(images):
-    #     image.save(os.path.join(args.sample_output_dir, '{:04d}.png'.format(i)))
+    images = [elem for sublist in predictions for elem in sublist[0]]
+    if not os.path.exists(args.sample_output_dir):
+        try:
+            os.mkdir(args.sample_output_dir)
+        except:
+            pass
+
+    if args.sample_output_dir is not None:
+        for i, image in enumerate(images):
+            # Determine the folder name by the index of the image
+            folder_name = os.path.join(args.sample_output_dir, f'{i // 5:04d}')
+            # Create the folder if it doesn't exist
+            if not os.path.exists(folder_name):
+                os.makedirs(folder_name, exist_ok=True)
+            # Save the image in the corresponding folder
+            image_path = os.path.join(folder_name, f'{i % 5:04d}.png')
+            image.save(image_path)
 
     if args.calculate_fid:
         ori = np.array([elem for sublist in predictions for elem in sublist[1]])
         gen = np.array([elem for sublist in predictions for elem in sublist[2]])
         fid = calculate_fid_given_features(ori, gen)
         print('FID: {}'.format(fid))
+
+
 
 
 def custom_sample(args: DictConfig) -> None:
@@ -550,20 +563,21 @@ def custom_sample(args: DictConfig) -> None:
     if not os.path.exists(args.sample_output_dir):
         os.makedirs(args.sample_output_dir, exist_ok=True)
 
-        # Create a folder for every 5 images and save them sequentially
-    for i, image in enumerate(images):
-        # Determine the folder name by the index of the image
-        folder_name = os.path.join(args.sample_output_dir, f'{i // 5:04d}')
-        # Create the folder if it doesn't exist
-        if not os.path.exists(folder_name):
-            os.makedirs(folder_name, exist_ok=True)
-        # Save the image in the corresponding folder
-        image_path = os.path.join(folder_name, f'{i % 5:04d}.png')
-        image.save(image_path)
+    if args.sample_output_dir is not None:
+        for i, image in enumerate(images):
+            # Determine the folder name by the index of the image
+            folder_name = os.path.join(args.sample_output_dir, f'{i // 5:04d}')
+            # Create the folder if it doesn't exist
+            if not os.path.exists(folder_name):
+                os.makedirs(folder_name, exist_ok=True)
+            # Save the image in the corresponding folder
+            image_path = os.path.join(folder_name, f'{i % 5:04d}.png')
+            image.save(image_path)
 
 
 @hydra.main(config_path=".", config_name="config")
 def main(args: DictConfig) -> None:
+    torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)
     if args.num_cpu_cores > 0:
         torch.set_num_threads(args.num_cpu_cores)

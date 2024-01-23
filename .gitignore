@@ -15,3 +15,6 @@ captions.txt
 *.pth
 *.ckpt
 *.npz
+/data/pororo_png/
+/data/flintstones_data/
+*.h5

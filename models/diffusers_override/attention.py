@@ -353,6 +353,7 @@ class BasicTransformerBlock(nn.Module):
             dim_head=attention_head_dim,
             dropout=dropout,
             bias=attention_bias,
+            lora_mode='qkv'
         )  # is a self-attention
         self.ff = FeedForward(dim, dropout=dropout, activation_fn=activation_fn)
         self.attn2 = CrossAttention(

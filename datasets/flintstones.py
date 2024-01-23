@@ -28,10 +28,14 @@ class StoryDataset(Dataset):
 
         self.h5_file = args.get(args.dataset).hdf5_file
         self.subset = subset
+        if subset == "test":
+            self.early_stop = args.stop_sample_early if args.stop_sample_early else False
+        else:
+            self.early_stop = False
 
         self.augment = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize([512, 512]),
+            transforms.Resize([256, 256]),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5])
         ])
@@ -110,8 +114,7 @@ class StoryDataset(Dataset):
         if not hasattr(self, 'h5'):
             self.open_h5()
         length = len(self.h5['text'])
-        return length
-        # return 8
+        return self.early_stop if self.early_stop else length
 
 
 class CustomStory(StoryDataset):
@@ -167,7 +170,7 @@ def test_case(args):
     story_dataloader = DataLoader(story_dataset, batch_size=1, shuffle=False, num_workers=8)
 
     # Create destination directory
-    dst_folder = '../ckpts/output_src_img'
+    dst_folder = '../archived/output_src_img'
     if not os.path.exists(dst_folder):
         os.makedirs(dst_folder)
 

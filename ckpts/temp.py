@@ -3,7 +3,7 @@ import matplotlib.image as mpimg
 import os
 
 # Set the root path for the images
-root_path = './adapt_output_img/'  # Replace with your images' directory path
+root_path = '../archived/adapt_output_img/'  # Replace with your images' directory path
 
 # Set the number of images
 num_images = 5
