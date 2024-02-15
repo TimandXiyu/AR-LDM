@@ -27,15 +27,10 @@ def main(args):
     annotations = json.load(open(os.path.join(args.data_dir, 'flintstones_annotations_v1-0.json')))
 
     rm_char = ["pebbles", "hoppy", "bamm bamm"]  # remove characters by mention of names
-    rm_by_target_ids = []  # remove characters by target ids
-    #  get target ids by reading folders
     target_root = r"D:\AR-LDM\data\target_chars"
-    # glob the target_root recursively and return all files ending with .jpg
     target_ids = list(Path(target_root).glob("**/*.jpg"))
-    # get file name
     target_ids = [i.stem for i in target_ids]
 
-    # remove by mentioned of character in descriptions and labelNPC
     raw_chars = dict()
     characters = dict()
     descriptions = dict()

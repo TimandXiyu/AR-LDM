@@ -430,7 +430,7 @@ class ARLDM(pl.LightningModule):
 def train(args: DictConfig) -> None:
     dataloader = LightningDataset(args)
     dataloader.setup('fit')
-    model = ARLDM(args, steps_per_epoch=dataloader.get_length_of_train_dataloader() / (args.batch_size * len(args.gpu_ids)))
+    model = ARLDM(args, steps_per_epoch=dataloader.get_length_of_train_dataloader() / len(args.gpu_ids))
 
     logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
 
@@ -539,8 +539,6 @@ def sample(args: DictConfig) -> None:
         gen = np.array([elem for sublist in predictions for elem in sublist[2]])
         fid = calculate_fid_given_features(ori, gen)
         print('FID: {}'.format(fid))
-
-
 
 
 def custom_sample(args: DictConfig) -> None:

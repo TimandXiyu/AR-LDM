@@ -22,6 +22,10 @@ class StoryDataset(Dataset):
 
         self.h5_file = args.get(args.dataset).hdf5_file
         self.subset = subset
+        if subset == "test":
+            self.early_stop = args.stop_sample_early if args.stop_sample_early else False
+        else:
+            self.early_stop = False
 
         self.augment = transforms.Compose([
             transforms.ToPILImage(),
@@ -90,4 +94,5 @@ class StoryDataset(Dataset):
     def __len__(self):
         if not hasattr(self, 'h5'):
             self.open_h5()
-        return len(self.h5['text'])
+        length = len(self.h5['text'])
+        return self.early_stop if self.early_stop else length

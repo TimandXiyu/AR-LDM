@@ -297,6 +297,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_dir', type=str, required=True, help='flintstones data directory')
     parser.add_argument('--save_path', type=str, required=True, help='path to save hdf5')
     args = parser.parse_args()
+    main(args)
     # get_img_from_descriptions(args)
     # main_refined_dataset(args)
-    get_img_from_ids(args)
+    # get_img_from_ids(args)
