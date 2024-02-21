@@ -25,7 +25,8 @@ from models.blip_override.blip import blip_feature_extractor, init_tokenizer
 from models.diffusers_override.unet_2d_condition import UNet2DConditionModel
 from models.inception import InceptionV3
 from pytorch_lightning.callbacks import TQDMProgressBar
-# import bitsandbytes as bnb
+from lora_diffusion import inject_trainable_lora
+import itertools
 
 
 class LightningDataset(pl.LightningDataModule):
@@ -159,20 +160,25 @@ class ARLDM(pl.LightningModule):
         if args.freeze_resnet:
             self.freeze_params(self.unet.parameters())
             # self.unfreeze_params([p for n, p in self.unet.named_parameters() if "lora" in n])
-            self.unfreeze_params([p for n, p in self.unet.named_parameters() if "attention" in n])
+            # self.unfreeze_params([p for n, p in self.unet.named_parameters() if "attention" in n])
 
         if args.freeze_blip and hasattr(self, "mm_encoder"):
             self.freeze_params(self.mm_encoder.parameters())
             self.unfreeze_params(self.mm_encoder.text_encoder.embeddings.word_embeddings.parameters())
 
-        if args.freeze_clip and hasattr(self, "text_encoder"):
-            self.freeze_params(self.text_encoder.parameters())
-            self.unfreeze_params(self.text_encoder.text_model.embeddings.token_embedding.parameters())
+        # if args.freeze_clip and hasattr(self, "text_encoder"):
+        #     self.freeze_params(self.text_encoder.parameters())
+        #     self.unfreeze_params(self.text_encoder.text_model.embeddings.token_embedding.parameters())
 
-        # print layer names and sizes and requires_grad
-        # for name, param in self.named_parameters():
-        #     print(name, param.size(), param.requires_grad)
-
+        self.unet_lora_params, self.train_names = inject_trainable_lora(self.unet, verbose=True)
+        # print all param names of unet
+        for name, param in self.unet.named_parameters():
+            print(name, param.requires_grad)
+        for name, param in self.text_encoder.named_parameters():
+            print(name, param.requires_grad)
+        for name, param in self.mm_encoder.named_parameters():
+            print(name, param.requires_grad)
+        pass
 
     @staticmethod
     def freeze_params(params):
@@ -198,7 +204,11 @@ class ARLDM(pl.LightningModule):
         print("Blip new vocab size: ", len(self.blip_tokenizer))
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.args.init_lr, weight_decay=1e-4)
+        optimizer = torch.optim.AdamW(itertools.chain(*self.unet_lora_params,
+                                      self.text_encoder.parameters(),
+                                      self.mm_encoder.text_encoder.embeddings.word_embeddings.parameters()),
+                                      lr=self.args.init_lr,
+                                      weight_decay=1e-4)
         # optimizer = bnb.optim.AdamW8bit(self.parameters(), lr=self.args.init_lr, weight_decay=1e-4)
         scheduler = LinearWarmupCosineAnnealingLR(optimizer,
                                                   warmup_epochs=self.args.warmup_epochs * self.steps_per_epoch,

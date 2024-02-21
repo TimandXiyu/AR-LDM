@@ -3,6 +3,7 @@ import hydra
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import json
 
 import cv2
 import h5py
@@ -23,13 +24,24 @@ class StoryDataset(Dataset):
 
     def __init__(self, subset, args, cur_char):
         super(StoryDataset, self).__init__()
-        data_dir = args.get(args.dataset).data_dir
-        self.descriptions = np.load(os.path.join(data_dir, 'descriptions.npy'), allow_pickle=True,
+        self.args = args
+        self.subset = subset
+        self.data_dir = args.get(args.dataset).data_dir
+        self.descriptions = np.load(os.path.join(self.data_dir, 'descriptions.npy'), allow_pickle=True,
                                encoding='latin1').item()
-        self.imgs_list = np.load(os.path.join(data_dir, 'img_cache4.npy'), encoding='latin1')
-        self.followings_list = np.load(os.path.join(data_dir, 'following_cache4.npy'))
-        train_ids, val_ids, test_ids = np.load(os.path.join(data_dir, 'train_seen_unseen_ids.npy'),
+        self.imgs_list = np.load(os.path.join(self.data_dir, 'img_cache4.npy'), encoding='latin1')
+        self.followings_list = np.load(os.path.join(self.data_dir, 'following_cache4.npy'))
+        self.story_list = []
+        for i in range(len(self.imgs_list)):
+            first_frame = self.imgs_list[i]
+            sub_frames = list(self.followings_list[i])
+            first_frame = first_frame.decode('utf-8')
+            sub_frames = [frame.decode('utf-8') for frame in sub_frames]
+            self.story_list.append([first_frame] + sub_frames)
+        train_ids, val_ids, test_ids = np.load(os.path.join(self.data_dir, 'train_seen_unseen_ids.npy'),
                                                allow_pickle=True)
+        # load json
+        self.char_mapping = json.load(open(os.path.join(self.data_dir, 'char_mapping.json'), 'r'))
         self.train_ids = np.sort(train_ids)
         self.val_ids = np.sort(val_ids)
         self.test_ids = np.sort(test_ids)
@@ -37,22 +49,43 @@ class StoryDataset(Dataset):
         # open h5 file to load seen chars
         self.h5_file = args.get(args.dataset).hdf5_file
         self.h5_file = h5py.File(self.h5_file, "r")
-        self.seen_train_len, self.seen_val_len, self.seen_test_len = self.h5_file['train']['text'], self.h5_file['val']['text'], self.h5_file['test']['text']
+        self.seen_train_len, self.seen_val_len, self.seen_test_len = len(self.h5_file['train']['text']), len(self.h5_file['val']['text']), len(self.h5_file['test']['text'])
+
+        self.seen_train_indexes = random.sample(range(self.seen_train_len), int(self.seen_train_len * 0.01))
+        self.seen_val_indexes = random.sample(range(self.seen_val_len), int(self.seen_val_len * 0.01))
+        self.seen_test_indexes = random.sample(range(self.seen_test_len), int(self.seen_test_len * 0.01))
 
         # search for the cur char in all annotations
-        matching_img = []
+        matching_img = {}
         for id, desc in self.descriptions.items():
             if cur_char in desc[0].lower():
-                matching_img.append(id + ".png")
+                # make the cur_char first character capital
+                _capi_cur_char = cur_char[0].upper() + cur_char[1:]
+                new_name = f"<char-{self.char_mapping[cur_char]}>"
+                desc = desc[0].replace(cur_char, new_name)
+                desc = desc.replace(_capi_cur_char, new_name)
+                matching_img[id] = desc
+
+        for id, desc in matching_img.items():
+            # replace all characters with their nominal names based on the json mapping
+            for char, nominal in self.char_mapping.items():
+                capi_char = char[0].upper() + char[1:]
+                desc = desc.replace(char, f"<char-{nominal}>")
+                desc = desc.replace(capi_char, f"<char-{nominal}>")
+                matching_img[id] = desc
+        # replace annotation for matching_img in descriptions
+        for id, desc in matching_img.items():
+            self.descriptions[id] = [desc]
+        self.unseen = []
+        for img_ids in self.story_list:
+            for id in img_ids:
+                if id.split(".")[0] in list(matching_img.keys()):
+                    self.unseen.append(img_ids)
+
+        self.unseen_train = random.sample(self.unseen, int(len(matching_img) * 0.1))
+        self.unseen_test = [i for i in self.unseen if i not in self.unseen_train]
 
         self.args = args
-
-        self.h5_file = args.get(args.dataset).hdf5_file
-        self.subset = subset
-        if subset == "test":
-            self.early_stop = args.stop_sample_early if args.stop_sample_early else False
-        else:
-            self.early_stop = False
 
         self.augment = transforms.Compose([
             transforms.ToPILImage(),
@@ -76,27 +109,48 @@ class StoryDataset(Dataset):
             transforms.Normalize([0.48145466, 0.4578275, 0.40821073], [0.26862954, 0.26130258, 0.27577711])
         ])
 
-    def open_h5(self):
-        h5 = h5py.File(self.h5_file, "r")
-        self.h5 = h5[self.subset]
-
     def __getitem__(self, index):
-        if not hasattr(self, 'h5'):
-            self.open_h5()
+        if self.subset == 'train':
+            if index < len(self.seen_train_indexes):
+                index = self.seen_train_indexes[index]
+                images = []
+                for i in range(5):
+                    img = self.h5_file['train']['image{}'.format(i)][index]
+                    img = cv2.imdecode(img, cv2.IMREAD_COLOR)
+                    idx = random.randint(0, img.shape[0] / 128 - 1)
+                    images.append(img[idx * 128: (idx + 1) * 128])
+                texts = self.h5_file['train']['text'][index].decode('utf-8').split('|')
+            else:
+                # direct reading from numpy files
+                story = self.unseen_train[index - len(self.seen_train_indexes)]
+                images = [cv2.imread(os.path.join(self.data_dir, img)) for img in story]
+                for i in range(5):
+                    idx = random.randint(0, images[i].shape[0] / 128 - 1)
+                    images[i] = images[i][idx * 128: (idx + 1) * 128]
 
-        images = list()
-        for i in range(5):
-            im = self.h5['image{}'.format(i)][index]
-            im = cv2.imdecode(im, cv2.IMREAD_COLOR)
-            idx = random.randint(0, im.shape[0] / 128 - 1)
-            images.append(im[idx * 128: (idx + 1) * 128])
+                texts = [self.descriptions[img.split(".")[0]][0] for img in story]
+        elif self.subset == 'test_seen':
+            index = self.seen_test_indexes[index]
+            images = []
+            for i in range(5):
+                img = self.h5_file['train']['image{}'.format(i)][index]
+                img = cv2.imdecode(img, cv2.IMREAD_COLOR)
+                idx = random.randint(0, img.shape[0] / 128 - 1)
+                images.append(img[idx * 128: (idx + 1) * 128])
+            texts = self.h5_file['train']['text'][index].decode('utf-8').split('|')
+        elif self.subset == 'test_unseen':
+            story = self.unseen_test[index]
+            images = [cv2.imread(os.path.join(self.data_dir, img)) for img in story]
+            for i in range(5):
+                idx = random.randint(0, images[i].shape[0] / 128 - 1)
+                images[i] = images[i][idx * 128: (idx + 1) * 128]
+
+            texts = [self.descriptions[img.split(".")[0]][0] for img in story]
 
         source_images = torch.stack([self.blip_image_processor(im) for im in images])
         images = images[1:] if self.args.task == 'continuation' else images
         images = torch.stack([self.augment(im) for im in images]) \
             if self.subset in ['train', 'val'] else torch.from_numpy(np.array(images))
-
-        texts = self.h5['text'][index].decode('utf-8').split('|')
 
         # tokenize caption using default tokenizer
         tokenized = self.clip_tokenizer(
@@ -116,13 +170,20 @@ class StoryDataset(Dataset):
             return_tensors="pt",
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
+        print(texts)
         return images, captions, attention_mask, source_images, source_caption, source_attention_mask
 
     def __len__(self):
-        if not hasattr(self, 'h5'):
-            self.open_h5()
-        length = len(self.h5['text'])
-        return self.early_stop if self.early_stop else length
+        seen_train_len = len(self.seen_train_indexes)
+        seen_test_len = len(self.seen_test_indexes)
+        unseen_train_len = len(self.unseen_train)
+        unseen_test_len = len(self.unseen_test)
+        if self.subset == 'train':
+            return seen_train_len + unseen_train_len
+        elif self.subset == 'test':
+            return seen_test_len + unseen_test_len
+        else:
+            return seen_test_len + unseen_test_len
 
 @hydra.main(config_path="..", config_name="config")
 def test_case(args):
@@ -133,7 +194,6 @@ def test_case(args):
 
     for batch in tqdm(story_dataloader):
         _ = batch
-        print(_)
 
 
 if __name__ == "__main__":
