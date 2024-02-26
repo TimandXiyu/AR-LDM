@@ -11,13 +11,15 @@ from tqdm import tqdm
 def main(args):
     descriptions = np.load(os.path.join(args.data_dir, 'descriptions.npy'), allow_pickle=True, encoding='latin1').item()
     imgs_list = np.load(os.path.join(args.data_dir, 'img_cache4.npy'), encoding='latin1')
+
     followings_list = np.load(os.path.join(args.data_dir, 'following_cache4.npy'))
     train_ids, val_ids, test_ids = np.load(os.path.join(args.data_dir, 'train_seen_unseen_ids.npy'), allow_pickle=True)
     train_ids = np.sort(train_ids)
     val_ids = np.sort(val_ids)
     test_ids = np.sort(test_ids)
+    all_ids = np.concatenate([train_ids, val_ids, test_ids])
 
-    exclude_chars = ['popo', 'pipi', 'whale', 'shark', 'harry', 'tutu', 'alien']
+    exclude_chars = ["harry"]
 
     marked_pth = list()
     print("exclude chars: ", exclude_chars)
@@ -30,7 +32,7 @@ def main(args):
 
     print("Starting creating HDF5 file")
     f = h5py.File(args.save_path, "w")
-    for subset, ids in {'train': train_ids, 'val': val_ids, 'test': test_ids}.items():
+    for subset, ids in {'test': all_ids}.items():
         excluded_ids = list()
         for id in ids:
             cur_img_pth = [str(imgs_list[id])[2:-1]] + [str(followings_list[id][i])[2:-1] for i in range(4)]
@@ -38,6 +40,7 @@ def main(args):
                 if pth in marked_pth:
                     excluded_ids.append(id)
         excluded_ids = list(set(excluded_ids))
+        excluded_ids = sorted(excluded_ids)
         # removed marked ids
         print("length of original dataset is: ", len(ids))
         ids = [id for id in ids if id not in excluded_ids]

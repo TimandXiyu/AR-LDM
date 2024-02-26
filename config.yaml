@@ -1,37 +1,41 @@
 # device
-mode: sample  # train sample adapt custom_sample
+mode: train_unseen  # train sample adapt custom_sample
 gpu_ids: [3]  # gpu ids
-batch_size: 4  # batch size each item denotes one story
-num_workers: 16 # number of workers
+batch_size: 1  # batch size each item denotes one story
+num_workers: 0 # number of workers
 num_cpu_cores: -1  # number of cpu cores
 seed: 0  # random seed
 ckpt_dir: ./ckpts # checkpoint directory
-run_name: flintstones_lora # name for this run
+run_name: flintstones_train_unseen # name for this run
+cur_char: # cache current character
+history_char: # cache history character, don't fill this field
 
 # task
-dataset: flintstones # pororo flintstones vistsis vistdii | flintstones_unseen
+dataset: flintstones_unseen # pororo flintstones vistsis vistdii | flintstones_unseen
 task: visualization  # continuation visualization
 
 # train
-init_lr: 1e-4
-warmup_epochs: 5  # warmup epochs
-max_epochs: 20  # max epochs
+init_lr: 1e-5
+warmup_epochs: 0  # warmup epochs
+max_epochs: 50  # max epochs
 train_model_file:  # model file for resume, none for train from scratch
 freeze_clip: True  # whether to freeze clip
 freeze_blip: True  # whether to freeze blip
 freeze_resnet: True  # whether to freeze resnet
-save_freq: 10  # save frequency
+save_freq: 50  # save frequency
 
 # sample
-test_model_file: "/home/xiyu/projects/AR-LDM/ckpts/flintstones_lora/epoch=19-step=90040.ckpt" #model file for test
-calculate_fid: True  # whether to calculate FID scores
+test_model_file: "/home/xiyu/projects/AR-LDM/ckpts/flintstones_official_ckpt/flintstones.ckpt" #model file for test
+calculate_fid: False  # whether to calculate FID scores
+calculate_text_clipscore: False # whether to calculate text clipscore
+calculate_visual_clipscore: False # whether to calculate visual clipscore, need to have reference images
 scheduler: ddim  # ddim pndm
 guidance_scale: 6  # guidance scale
 num_inference_steps: 100  # number of inference steps
-sample_output_dir:  # output directory
+sample_output_dir: ./ckpts/output_images # output directory
 custom_prompts: ./datasets/fs_special_token.txt # custom prompts file, only used for custom_sample
-stop_sample_early: # only sample for a few stories
-resolution: 256 # resolution for sampling, keep the same as the training resolution
+stop_sample_early: 5 # only sample for a few stories
+resolution: 512 # resolution for sampling, keep the same as the training resolution
 
 # model config
 unet_model:
@@ -39,20 +43,20 @@ unet_model:
   low_cpu_mem_usage: False
 
 flintstones_unseen:
-  target_chars: ["pebbles", "bamm bamm", "slaghoople"]
-  data_dir: ../data/flintstones_data
-  target_dir: ../data/flintstones_data/target_chars
-  hdf5_file: ../data/flintstones_rare-char_rmeoved.h5
+  target_chars: ["slaghoople", "texarock_1"]
+  data_dir: ./data/flintstones_data
+  target_dir: ./data/flintstones_data/target_chars
+  hdf5_file: ./data/flintstones_rare-char_rmeoved.h5
   max_length: 91
   new_tokens: [ "fred", "barney", "wilma", "betty", "dino", "slate"]
   clip_embedding_tokens: 49412
   blip_embedding_tokens: 30525
 
 pororo_unseen:
-  target_chars: ['popo', 'pipi', 'whale', 'shark', 'harry', 'tutu', 'alien']
-  data_dir: ../data/pororo_png
-  target_dir: ../data/pororo_png/target_chars
-  hdf5_file: ../data/pororo_char_removed.h5
+  target_chars: ['tutu', 'alien', 'shark', 'whale'] # ['popo', 'pipi', 'whale', 'shark', 'harry', 'tutu', 'alien']
+  data_dir: ./data/pororo_png
+  target_dir: ./data/pororo_png/target_chars
+  hdf5_file: ./data/pororo_char_removed.h5
   max_length: 85
   new_tokens: [ "pororo", "loopy", "eddy", "poby", "tongtong", "crong", "rody", "petty"]
   clip_embedding_tokens: 49416
@@ -69,7 +73,7 @@ pororo:
 flintstones:
   hdf5_file: ./data/flintstones_rare-char_rmeoved.h5
   max_length: 91
-  new_tokens: [ "fred", "barney", "wilma", "betty", "dino", "slate"]
+  new_tokens: [ "fred", "barney", "wilma", "betty", "pebbles", "dino", "slate"]
   adapt_tokens:
   clip_embedding_tokens: 49412
   blip_embedding_tokens: 30525

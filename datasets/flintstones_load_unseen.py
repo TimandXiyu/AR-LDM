@@ -23,11 +23,15 @@ class StoryDataset(Dataset):
     A custom subset class for the LRW (includes train, val, test) subset
     """
 
-    def __init__(self, subset, args, cur_char):
+    def __init__(self, subset, args):
         super(StoryDataset, self).__init__()
         self.args = args
         self.subset = subset
-        self.cur_char = cur_char # suppose to be ONE name of the character
+        if subset == "test_unseen" or subset == "test_seen":
+            self.early_stop = args.stop_sample_early if args.stop_sample_early else False
+        else:
+            self.early_stop = False
+        self.cur_char = args.cur_char # suppose to be ONE name of the character
 
         self.target_chars = args.get(args.dataset).target_chars  # target_chars is a list of strings
         self.target_dir = args.get(args.dataset).target_dir
@@ -43,8 +47,8 @@ class StoryDataset(Dataset):
         self.h5file = h5py.File(args.get(args.dataset).hdf5_file, "r")
         self.seen_len = {"train": len(self.h5file['train']['text']), "test": len(self.h5file['test']['text'])}
         # get 10% random samples from train and test split of the h5 file
-        self.seen_train_indexes = random.sample(range(self.seen_len["train"]), int(self.seen_len["train"] * 0.1))
-        self.seen_test_indexes = random.sample(range(self.seen_len["test"]), int(self.seen_len["test"] * 0.1))
+        self.seen_train_indexes = random.sample(range(self.seen_len["train"]), 5)
+        self.seen_test_indexes = random.sample(range(self.seen_len["test"]), 100)
 
         self.unseen_char = dict()
 
@@ -61,15 +65,15 @@ class StoryDataset(Dataset):
         self.unseen_with_dir = os.listdir(self.target_dir)
 
         target_ids = []
-        if cur_char not in self.unseen_with_dir:
+        if self.cur_char not in self.unseen_with_dir:
             for k, v in self.descriptions.items():
                 npc_ls = [ele.lower() for ele in characters[k]]
-                if cur_char in v.lower():
+                if self.cur_char in v.lower():
                     target_ids.append(k)
-                if cur_char in npc_ls:
+                if self.cur_char in npc_ls:
                     target_ids.append(k)
         else:
-            target_ids = os.listdir(os.path.join(self.target_dir, cur_char))
+            target_ids = os.listdir(os.path.join(self.target_dir, self.cur_char))
             # remove .jpg extension
             target_ids = [i.split('.')[0] for i in target_ids]
 
@@ -97,8 +101,9 @@ class StoryDataset(Dataset):
         # split the unseen char into train and test
         self.unseen_train = []
         self.unseen_test = []
-        # pick 20% of the unseen sample for training with numpy choice
-        self.unseen_train = list(np.random.choice(list(self.unseen_samples.keys()), int(len(self.unseen_samples) * 0.2), replace=False))
+        # set random seed
+        np.random.seed(0)
+        self.unseen_train = list(np.random.choice(list(self.unseen_samples.keys()), 10, replace=False))
         self.unseen_test = [i for i in self.unseen_samples if i not in self.unseen_train]
 
         self.unseen_train = {k: [k] + self._followings[k] for k in self.unseen_train}
@@ -128,7 +133,7 @@ class StoryDataset(Dataset):
 
         self.augment = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize([256, 256]),
+            transforms.Resize([512, 512]),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5])
         ])
@@ -159,7 +164,9 @@ class StoryDataset(Dataset):
                 images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in story]
                 images = [np.load(img) for img in images]
                 images = [img[np.random.randint(0, img.shape[0])] for img in images]
-                char_nominal_name = f"<char-{self.nominal_name_mapping[self.cur_char]}>"
+                char_nominal_name = self.nominal_name_mapping[self.cur_char]
+                # join all list strings to one with space in between
+                char_nominal_name = " ".join(char_nominal_name)
                 # if cur_char is not hand-picked, then get the annotation via description
                 if self.cur_char not in self.unseen_with_dir:
                     texts = [self.descriptions[i] for i in story]
@@ -226,7 +233,9 @@ class StoryDataset(Dataset):
             return_tensors="pt",
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
-        return images, captions, attention_mask, source_images, source_caption, source_attention_mask
+        text = tuple(texts)
+
+        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts
 
     def __len__(self):
         seen_train_len = len(self.seen_train_indexes)
@@ -235,24 +244,21 @@ class StoryDataset(Dataset):
         unseen_test_len = len(self.unseen_test)
         if self.subset == 'train':
             return seen_train_len + unseen_train_len
-        elif self.subset == 'test_seen':
-            return seen_test_len
         elif self.subset == 'test_unseen':
-            return unseen_test_len
-        else:
-            raise ValueError("subset must be either train, test_seen, or test_unseen")
+            return self.early_stop if self.early_stop else unseen_test_len
+        elif self.subset == 'test_seen':
+            return self.early_stop if self.early_stop else seen_test_len
 
 
-@hydra.main(config_path="..", config_name="config")
+@hydra.main(config_path="..", config_name="config-test")
 def test_case(args):
     pl.seed_everything(args.seed)
 
-    story_dataset = StoryDataset('test_unseen', args=args, cur_char='slaghoople')
+    story_dataset = StoryDataset('train', args=args)
     story_dataloader = DataLoader(story_dataset, batch_size=1, shuffle=False, num_workers=0)
 
     for batch in tqdm(story_dataloader):
         _ = batch
-        print(_)
 
 
 if __name__ == "__main__":

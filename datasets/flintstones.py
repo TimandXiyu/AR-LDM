@@ -95,11 +95,7 @@ class StoryDataset(Dataset):
             return_tensors="pt",
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
-        # for img_idx in range(len(images)):
-        #     caption = captions[img_idx].tolist()
-        #     caption_text = self.clip_tokenizer.decode(caption, skip_special_tokens=True)
-        #     print(caption_text)
-        return images, captions, attention_mask, source_images, source_caption, source_attention_mask
+        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts
     """
     images: [5, 3, 256, 256]
     captions: [5, 91]
