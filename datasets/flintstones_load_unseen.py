@@ -65,6 +65,9 @@ class StoryDataset(Dataset):
         self.unseen_with_dir = os.listdir(self.target_dir)
 
         target_ids = []
+        if self.cur_char is None:
+            print("warning, you are using a placeholder for current character, make sure you are testing seen examples!")
+            self.cur_char = 'x' # just a placeholder, should only be used when testing for seen examples!
         if self.cur_char not in self.unseen_with_dir:
             for k, v in self.descriptions.items():
                 npc_ls = [ele.lower() for ele in characters[k]]
@@ -131,9 +134,28 @@ class StoryDataset(Dataset):
         msg = self.blip_tokenizer.add_tokens(list(args.get(args.dataset).new_tokens), special_tokens=True)
         print("blip {} new tokens added".format(msg))
 
+        # print vocab size
+        print("clip vocab size: ", self.clip_tokenizer.vocab_size)
+        print("blip vocab size: ", self.blip_tokenizer.vocab_size)
+
+        # adding additional tokens for unseen characters
+        nominal_names = []
+        for char in self.target_chars:
+            char_nominal_name = self.nominal_name_mapping[char][0] # 1st ele is the nominal name, 2nd is the base token
+            nominal_names.append(char_nominal_name)
+        msg = self.clip_tokenizer.add_tokens(nominal_names, special_tokens=True)
+        print("clip {} new tokens added".format(msg))
+        msg = self.blip_tokenizer.add_tokens(nominal_names, special_tokens=True)
+        print("blip {} new tokens added".format(msg))
+
+        # print vocab size
+        print("clip vocab size: ", self.clip_tokenizer.vocab_size)
+        print("blip vocab size: ", self.blip_tokenizer.vocab_size)
+
+
         self.augment = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize([512, 512]),
+            transforms.Resize([256, 256]),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5])
         ])
@@ -233,7 +255,6 @@ class StoryDataset(Dataset):
             return_tensors="pt",
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
-        text = tuple(texts)
 
         return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts
 

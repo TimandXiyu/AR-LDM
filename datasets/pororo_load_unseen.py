@@ -63,8 +63,8 @@ class StoryDataset(Dataset):
         self.seen_train_len, self.seen_val_len, self.seen_test_len = len(self.h5_file['train']['text']), len(self.h5_file['val']['text']), len(self.h5_file['test']['text'])
 
         self.seen_train_indexes = random.sample(range(self.seen_train_len), 5)
-        self.seen_val_indexes = random.sample(range(self.seen_val_len), 200)
-        self.seen_test_indexes = random.sample(range(self.seen_test_len), 200)
+        self.seen_val_indexes = random.sample(range(self.seen_val_len), 100)
+        self.seen_test_indexes = random.sample(range(self.seen_test_len), 100)
 
         # search for the cur char in all annotations
         matching_img = {}
