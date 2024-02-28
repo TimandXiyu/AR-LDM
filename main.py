@@ -25,8 +25,8 @@ from models.blip_override.blip import blip_feature_extractor, init_tokenizer
 from models.diffusers_override.unet_2d_condition import UNet2DConditionModel
 from models.inception import InceptionV3
 from pytorch_lightning.callbacks import TQDMProgressBar
-# from lora_diffusion import inject_trainable_lora
-# import itertools
+from lora_diffusion import inject_trainable_lora
+import itertools
 import json
 
 
@@ -80,10 +80,10 @@ class LightningDataset(pl.LightningDataModule):
         return DataLoader(self.val_data, batch_size=self.args.batch_size, shuffle=False, **self.kwargs)
 
     def test_dataloader(self):
-        return DataLoader(self.test_data, batch_size=self.args.batch_size, shuffle=True, **self.kwargs)
+        return DataLoader(self.test_data, batch_size=self.args.batch_size, shuffle=False, **self.kwargs)
 
     def predict_dataloader(self):
-        return DataLoader(self.test_data, batch_size=self.args.batch_size, shuffle=True, **self.kwargs)
+        return DataLoader(self.test_data, batch_size=self.args.batch_size, shuffle=False, **self.kwargs)
 
     def get_length_of_train_dataloader(self):
         if not hasattr(self, 'trainloader'):
@@ -183,6 +183,7 @@ class ARLDM(pl.LightningModule):
         if args.freeze_clip and hasattr(self, "text_encoder"):
             self.freeze_params(self.text_encoder.parameters())
             self.unfreeze_params(self.text_encoder.text_model.embeddings.token_embedding.parameters())
+
 
     def add_token(self, existing_num, base_token):
 
@@ -669,7 +670,8 @@ def test_unseen(args: DictConfig) -> None:
             character_output_dir = os.path.join(args.sample_output_dir, cur_char)
             text_path = os.path.join(character_output_dir, 'texts.json')
             with open(text_path, 'w') as f:
-                json.dump(texts, f)
+                # write with indents
+                json.dump(texts, f, indent=4)
 
 def test_seen(args: DictConfig) -> None:
     dataloader = LightningDataset(args)
@@ -690,6 +692,36 @@ def test_seen(args: DictConfig) -> None:
         gen = np.array([elem for sublist in predictions for elem in sublist[2]])
         fid = calculate_fid_given_features(ori, gen)
         print('FID: {}'.format(fid))
+
+    generated_images = [elem for sublist in predictions for elem in sublist[0]]
+    original_images = [elem for sublist in predictions for elem in sublist[3]]
+    texts = [elem for sublist in predictions for elem in sublist[4]]
+
+    if not os.path.exists(args.sample_output_dir):
+        os.makedirs(args.sample_output_dir, exist_ok=True)
+
+    if args.sample_output_dir is not None:
+        for i, image in enumerate(generated_images):
+            character_output_dir = os.path.join(args.sample_output_dir, 'seen_characters')
+            if not os.path.exists(character_output_dir):
+                os.makedirs(character_output_dir)
+            img_folder_name = os.path.join(character_output_dir, f'{i // 5:04d}')
+            if not os.path.exists(img_folder_name):
+                os.makedirs(img_folder_name, exist_ok=True)
+            image_path = os.path.join(img_folder_name, f'{i % 5:04d}_generated.png')
+            image.save(image_path)
+
+        for i, image in enumerate(original_images):
+            character_output_dir = os.path.join(args.sample_output_dir, 'seen_characters')
+            img_folder_name = os.path.join(character_output_dir, f'{i // 5:04d}')
+            image_path = os.path.join(img_folder_name, f'{i % 5:04d}_original.png')
+            image.save(image_path)
+
+        # write texts into one json
+        character_output_dir = os.path.join(args.sample_output_dir, 'seen_characters')
+        text_path = os.path.join(character_output_dir, 'texts.json')
+        with open(text_path, 'w') as f:
+            json.dump(texts, f, indent=4)
 
 
 def calculate_fid_clipscore(args: DictConfig) -> None:
@@ -720,7 +752,7 @@ def calculate_fid_clipscore(args: DictConfig) -> None:
             pass
 
 
-@hydra.main(config_path=".", config_name="config-test")
+@hydra.main(config_path=".", config_name="config")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)

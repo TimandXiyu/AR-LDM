@@ -43,7 +43,7 @@ unet_model:
   low_cpu_mem_usage: False
 
 flintstones_unseen:
-  target_chars: ["slaghoople", "texarock_1"]
+  target_chars: ["slaghoople", "texarock_1", "gazoo", "seal", "yellow_tiger"]
   data_dir: ./data/flintstones_data
   target_dir: ./data/flintstones_data/target_chars
   hdf5_file: ./data/flintstones_rare-char_rmeoved.h5

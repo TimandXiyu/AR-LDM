@@ -48,7 +48,7 @@ class StoryDataset(Dataset):
         self.seen_len = {"train": len(self.h5file['train']['text']), "test": len(self.h5file['test']['text'])}
         # get 10% random samples from train and test split of the h5 file
         self.seen_train_indexes = random.sample(range(self.seen_len["train"]), 5)
-        self.seen_test_indexes = random.sample(range(self.seen_len["test"]), 100)
+        self.seen_test_indexes = random.sample(range(self.seen_len["test"]), 400)
 
         self.unseen_char = dict()
 
@@ -81,45 +81,32 @@ class StoryDataset(Dataset):
             target_ids = [i.split('.')[0] for i in target_ids]
 
         target_ids = list(set(target_ids))
-        unseen_samples = []
+        target_ids.sort()
+        rs = np.random.RandomState(42)
+        unseen_train_ids = rs.choice(target_ids, size=10, replace=False)
+        unseen_train_ids = unseen_train_ids.tolist()
+        unseen_test_ids = [i for i in target_ids if i not in unseen_train_ids]
+        unseen_train_story = []
+        unseen_test_story = []
         for k, v in self.followings.copy().items():
-            if k in target_ids or any(id in v for id in target_ids):
-                unseen_samples.append(k)
+            v = [k] + v
+            if any(id in unseen_train_ids for id in v) and all(id not in unseen_test_ids for id in v):
+                unseen_train_story.append(k)
+            if any(id in unseen_test_ids for id in v) and all(id not in unseen_train_ids for id in v):
+                unseen_test_story.append(k)
 
-        self.unseen_samples = {starting_id: [starting_id] + self._followings[starting_id] for starting_id in unseen_samples}
+        unseen_train_story = {starting_id: [starting_id] + self._followings[starting_id] for starting_id in unseen_train_story}
+        unseen_test_story = {starting_id: [starting_id] + self._followings[starting_id] for starting_id in unseen_test_story}
 
         print('parsing data finished')
-
-        # detect annotation flagged with !
-        invalid_unseen_sample = []
-        for k, v in self.unseen_char_anno.items():
-            if "!" in k:
-                invalid_unseen_sample.append(k.split(":")[1])
 
         self.cur_char_anno = {}
         for k, v in self.unseen_char_anno.items():
             if k.split(":")[0] == self.cur_char:
                 self.cur_char_anno[k.split(":")[1]] = v
 
-        # split the unseen char into train and test
-        self.unseen_train = []
-        self.unseen_test = []
-        # set random seed
-        np.random.seed(0)
-        self.unseen_train = list(np.random.choice(list(self.unseen_samples.keys()), 10, replace=False))
-        self.unseen_test = [i for i in self.unseen_samples if i not in self.unseen_train]
-
-        self.unseen_train = {k: [k] + self._followings[k] for k in self.unseen_train}
-        self.unseen_test = {k: [k] + self._followings[k] for k in self.unseen_test}
-
-        for ele in self.unseen_train.copy():
-            for invalid_id in invalid_unseen_sample:
-                if invalid_id == ele:
-                    self.unseen_train.pop(ele)
-        for ele in self.unseen_test.copy():
-            for invalid_id in invalid_unseen_sample:
-                if invalid_id == ele:
-                    self.unseen_test.pop(ele)
+        self.unseen_train = unseen_train_story
+        self.unseen_test = unseen_test_story
 
         # convert dict to list
         self.unseen_train = list(self.unseen_train.values())
@@ -134,11 +121,6 @@ class StoryDataset(Dataset):
         msg = self.blip_tokenizer.add_tokens(list(args.get(args.dataset).new_tokens), special_tokens=True)
         print("blip {} new tokens added".format(msg))
 
-        # print vocab size
-        print("clip vocab size: ", self.clip_tokenizer.vocab_size)
-        print("blip vocab size: ", self.blip_tokenizer.vocab_size)
-
-        # adding additional tokens for unseen characters
         nominal_names = []
         for char in self.target_chars:
             char_nominal_name = self.nominal_name_mapping[char][0] # 1st ele is the nominal name, 2nd is the base token
@@ -147,11 +129,6 @@ class StoryDataset(Dataset):
         print("clip {} new tokens added".format(msg))
         msg = self.blip_tokenizer.add_tokens(nominal_names, special_tokens=True)
         print("blip {} new tokens added".format(msg))
-
-        # print vocab size
-        print("clip vocab size: ", self.clip_tokenizer.vocab_size)
-        print("blip vocab size: ", self.blip_tokenizer.vocab_size)
-
 
         self.augment = transforms.Compose([
             transforms.ToPILImage(),
