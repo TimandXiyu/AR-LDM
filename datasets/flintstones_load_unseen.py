@@ -27,6 +27,7 @@ class StoryDataset(Dataset):
         super(StoryDataset, self).__init__()
         self.args = args
         self.subset = subset
+        self.use_handpick = args.get(args.dataset).use_handpick # using handpick followings, overwrite random sampling
         if subset == "test_unseen" or subset == "test_seen":
             self.early_stop = args.stop_sample_early if args.stop_sample_early else False
         else:
@@ -45,6 +46,7 @@ class StoryDataset(Dataset):
         self.nominal_name_mapping = json.load(open(os.path.join(self.data_dir, 'char_name_mapping.json'), 'r'))
         self.unseen_char_anno = json.load(open(os.path.join(self.data_dir, 'flintstones_unseen_anno.json'), 'r'))
         self.h5file = h5py.File(args.get(args.dataset).hdf5_file, "r")
+        self.new_followings = json.load(open(os.path.join(self.data_dir, 'new_followings.json'), 'r'))
         self.seen_len = {"train": len(self.h5file['train']['text']), "test": len(self.h5file['test']['text'])}
         # get 10% random samples from train and test split of the h5 file
         self.seen_train_indexes = random.sample(range(self.seen_len["train"]), 5)
@@ -67,7 +69,7 @@ class StoryDataset(Dataset):
         target_ids = []
         if self.cur_char is None:
             print("warning, you are using a placeholder for current character, make sure you are testing seen examples!")
-            self.cur_char = 'x' # just a placeholder, should only be used when testing for seen examples!
+            self.cur_char = 'slaghoople' # just a placeholder, should only be used when testing for seen examples!
         if self.cur_char not in self.unseen_with_dir:
             for k, v in self.descriptions.items():
                 npc_ls = [ele.lower() for ele in characters[k]]
@@ -77,14 +79,17 @@ class StoryDataset(Dataset):
                     target_ids.append(k)
         else:
             target_ids = os.listdir(os.path.join(self.target_dir, self.cur_char))
-            # remove .jpg extension
             target_ids = [i.split('.')[0] for i in target_ids]
 
         target_ids = list(set(target_ids))
         target_ids.sort()
-        rs = np.random.RandomState(42)
-        unseen_train_ids = rs.choice(target_ids, size=10, replace=False)
-        unseen_train_ids = unseen_train_ids.tolist()
+        if self.use_handpick and self.cur_char in list(self.new_followings.keys()):
+            unseen_train_ids = list(self.new_followings[self.cur_char].values())
+            unseen_train_ids = [item for sublist in unseen_train_ids for item in sublist]
+        else:
+            rs = np.random.RandomState(56)
+            unseen_train_ids = rs.choice(target_ids, size=10, replace=False)
+            unseen_train_ids = unseen_train_ids.tolist()
         unseen_test_ids = [i for i in target_ids if i not in unseen_train_ids]
         unseen_train_story = []
         unseen_test_story = []
@@ -94,9 +99,15 @@ class StoryDataset(Dataset):
                 unseen_train_story.append(k)
             if any(id in unseen_test_ids for id in v) and all(id not in unseen_train_ids for id in v):
                 unseen_test_story.append(k)
+        # handpicked stories come with complete list of followings, just load them
+        if self.use_handpick and self.cur_char in list(self.new_followings.keys()):
+            unseen_train_story = self.new_followings[self.cur_char]
+        else:
+            unseen_train_story = {starting_id: [starting_id] + self._followings[starting_id] for starting_id in unseen_train_story}
+            unseen_train_story = {k: v for k, v in unseen_train_story.items() if len(v) == 5}
 
-        unseen_train_story = {starting_id: [starting_id] + self._followings[starting_id] for starting_id in unseen_train_story}
         unseen_test_story = {starting_id: [starting_id] + self._followings[starting_id] for starting_id in unseen_test_story}
+        unseen_test_story = {k: v for k, v in unseen_test_story.items() if len(v) == 5}
 
         print('parsing data finished')
 
@@ -123,7 +134,7 @@ class StoryDataset(Dataset):
 
         nominal_names = []
         for char in self.target_chars:
-            char_nominal_name = self.nominal_name_mapping[char][0] # 1st ele is the nominal name, 2nd is the base token
+            char_nominal_name = self.nominal_name_mapping[char][1] # 1st ele is the nominal name, 2nd is the base token
             nominal_names.append(char_nominal_name)
         msg = self.clip_tokenizer.add_tokens(nominal_names, special_tokens=True)
         print("clip {} new tokens added".format(msg))
@@ -158,24 +169,23 @@ class StoryDataset(Dataset):
                     images.append(im[idx * 128: (idx + 1) * 128])
                 texts = self.h5file["train"]['text'][index].decode('utf-8').split('|')
             else:
-                # direct reading from numpy files
                 story = self.unseen_train[index - len(self.seen_train_indexes)]
                 images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in story]
                 images = [np.load(img) for img in images]
                 images = [img[np.random.randint(0, img.shape[0])] for img in images]
-                char_nominal_name = self.nominal_name_mapping[self.cur_char]
-                # join all list strings to one with space in between
-                char_nominal_name = " ".join(char_nominal_name)
-                # if cur_char is not hand-picked, then get the annotation via description
+                placeholder_name = self.nominal_name_mapping[self.cur_char][0]
+                special_token = self.nominal_name_mapping[self.cur_char][1]
                 if self.cur_char not in self.unseen_with_dir:
                     texts = [self.descriptions[i] for i in story]
                     texts = [text.lower() for text in texts]
-                    texts = [text.replace(self.cur_char, char_nominal_name) for text in texts]
+                    texts = [text.replace(self.cur_char, special_token) for text in texts]
                 else:
                     texts = []
                     for id in story:
                         try:
-                            texts.append(self.cur_char_anno[id])
+                            anno = self.cur_char_anno[id]
+                            anno = anno.replace(placeholder_name, special_token)
+                            texts.append(anno)
                         except KeyError:
                             texts.append(self.descriptions[id])
 
@@ -193,17 +203,19 @@ class StoryDataset(Dataset):
             images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in story]
             images = [np.load(img) for img in images]
             images = [img[np.random.randint(0, img.shape[0])] for img in images]
-            char_nominal_name = f"<char-{self.nominal_name_mapping[self.cur_char]}>"
-            # if cur_char is not hand-picked, then get the annotation via description
+            placeholder_name = self.nominal_name_mapping[self.cur_char][0]
+            special_token = self.nominal_name_mapping[self.cur_char][1]
             if self.cur_char not in self.unseen_with_dir:
                 texts = [self.descriptions[i] for i in story]
                 texts = [text.lower() for text in texts]
-                texts = [text.replace(self.cur_char, char_nominal_name) for text in texts]
+                texts = [text.replace(self.cur_char, special_token) for text in texts]
             else:
                 texts = []
                 for id in story:
                     try:
-                        texts.append(self.cur_char_anno[id])
+                        anno = self.cur_char_anno[id]
+                        anno = anno.replace(placeholder_name, special_token)
+                        texts.append(anno)
                     except KeyError:
                         texts.append(self.descriptions[id])
         else:
@@ -212,7 +224,7 @@ class StoryDataset(Dataset):
         source_images = torch.stack([self.blip_image_processor(im) for im in images])
         images = images[1:] if self.args.task == 'continuation' else images
         images = torch.stack([self.augment(im) for im in images]) \
-            if self.subset in ['train', 'val'] else torch.from_numpy(np.array(images))
+            if self.subset in ['train', 'val','train_unseen'] else torch.from_numpy(np.array(images))
 
         # tokenize caption using default tokenizer
         tokenized = self.clip_tokenizer(
@@ -248,7 +260,7 @@ class StoryDataset(Dataset):
             return self.early_stop if self.early_stop else seen_test_len
 
 
-@hydra.main(config_path="..", config_name="config-test")
+@hydra.main(config_path="..", config_name="config")
 def test_case(args):
     pl.seed_everything(args.seed)
 

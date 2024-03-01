@@ -373,13 +373,9 @@ class ARLDM(pl.LightningModule):
         self.log('loss/val_loss', loss, on_step=False, on_epoch=True, sync_dist=True, prog_bar=True)
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        BATCH_SIZE = batch[0].shape[0]
+        STORY_LEN = batch[0].shape[1]
         original_images, images, texts = self.sample(batch)
-        reshape_text = []
-        for i in range(len(texts[0])):
-            _tmp = []
-            for j in range(len(texts)):
-                _tmp.append(texts[j][i])
-            reshape_text.append(_tmp)
         if self.args.calculate_fid:
             original_images = original_images.cpu().numpy().astype('uint8')
             original_images = [Image.fromarray(im, 'RGB') for im in original_images]
@@ -388,7 +384,23 @@ class ARLDM(pl.LightningModule):
         else:
             ori = None
             gen = None
-        return images, ori, gen, original_images, texts
+        # transpose the texts
+        reshape_text = []
+        for i in range(len(texts[0])):
+            _tmp = []
+            for j in range(len(texts)):
+                _tmp.append(texts[j][i])
+            reshape_text.append(_tmp)
+        # transpose the image list
+        _tmp = []
+        for i in range(0, BATCH_SIZE):
+            img_of_story = []
+            for j in range(i, BATCH_SIZE * STORY_LEN, BATCH_SIZE):
+                img_of_story.append(images[j])
+            _tmp.append(img_of_story)
+
+        images_t = _tmp
+        return images_t, ori, gen, original_images, reshape_text
 
     def diffusion(self, encoder_hidden_states, attention_mask, height, width, num_inference_steps, guidance_scale, eta):
         latents = torch.randn((encoder_hidden_states.shape[0] // 2, self.unet.in_channels, height // 8, width // 8),
@@ -529,44 +541,6 @@ def sample(args: DictConfig) -> None:
             image_path = os.path.join(folder_name, f'{i % 5:04d}.png')
             image.save(image_path)
 
-
-def adapt(args: DictConfig) -> None:
-    dataloader = LightningDataset(args)
-    dataloader.setup('adapt')
-    model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False, steps_per_epoch=dataloader.get_length_of_train_dataloader() / (args.batch_size * len(args.gpu_ids)))
-
-    model.add_adapt_token()
-    logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
-
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=os.path.join(args.ckpt_dir, args.run_name),
-        save_top_k=-1,
-        every_n_epochs=50,
-        filename='{epoch}-{step}',
-        save_weights_only=False
-    )
-
-    lr_monitor = LearningRateMonitor(logging_interval='step')
-
-    callback_list = [lr_monitor, checkpoint_callback]
-
-    trainer = pl.Trainer(
-        accelerator='gpu',
-        devices=args.gpu_ids,
-        max_epochs=args.max_epochs,
-        benchmark=True,
-        logger=logger,
-        log_every_n_steps=1,
-        callbacks=callback_list,
-        strategy=DDPStrategy(find_unused_parameters=False),
-        precision=16,
-        num_sanity_val_steps=0,
-        gradient_clip_val=1.0,
-        limit_val_batches=0.0,
-    )
-
-    trainer.fit(model, dataloader, ckpt_path=args.train_model_file)
-
 def train_unseen(args: DictConfig) -> None:
     target_chars = args.get(args.dataset).target_chars
 
@@ -580,13 +554,13 @@ def train_unseen(args: DictConfig) -> None:
         normal_name = name_mapping[cur_char]
         # the tokenizer is in dataloader, this is to update the embedding of text models
         # the tokenizer is simply init to translate all possible tokens without aligning the vocab size
-        model.add_token(i, normal_name[1])
+        model.add_token(i, normal_name[2])
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=os.path.join(args.ckpt_dir, args.run_name),
             save_top_k=-1,
             every_n_epochs=args.save_freq,
-            filename='{epoch}-{step}-' + str(cur_char),
+            filename='{epoch}-' + str(cur_char),
         )
         lr_monitor = LearningRateMonitor(logging_interval='step')
         callback_list = [lr_monitor, checkpoint_callback]
@@ -639,7 +613,6 @@ def test_unseen(args: DictConfig) -> None:
         generated_images = [elem for sublist in predictions for elem in sublist[0]]
         original_images = [elem for sublist in predictions for elem in sublist[3]]
         texts = [elem for sublist in predictions for elem in sublist[4]]
-
         if args.calculate_fid:
             ori = np.array([elem for sublist in predictions for elem in sublist[1]])
             gen = np.array([elem for sublist in predictions for elem in sublist[2]])
@@ -650,20 +623,22 @@ def test_unseen(args: DictConfig) -> None:
             os.makedirs(args.sample_output_dir, exist_ok=True)
 
         if args.sample_output_dir is not None:
-            for i, image in enumerate(generated_images):
+            for i, story in enumerate(generated_images):
                 character_output_dir = os.path.join(args.sample_output_dir, cur_char)
                 if not os.path.exists(character_output_dir):
                     os.makedirs(character_output_dir)
-                img_folder_name = os.path.join(character_output_dir, f'{i // 5:04d}')
+                # create folder named by the index of the story
+                img_folder_name = os.path.join(character_output_dir, f'{i}')
                 if not os.path.exists(img_folder_name):
                     os.makedirs(img_folder_name, exist_ok=True)
-                image_path = os.path.join(img_folder_name, f'{i % 5:04d}_generated.png')
-                image.save(image_path)
+                for j, image in enumerate(story):
+                    image_path = os.path.join(img_folder_name, f'{j}_generated.png')
+                    image.save(image_path)
 
             for i, image in enumerate(original_images):
                 character_output_dir = os.path.join(args.sample_output_dir, cur_char)
-                img_folder_name = os.path.join(character_output_dir, f'{i // 5:04d}')
-                image_path = os.path.join(img_folder_name, f'{i % 5:04d}_original.png')
+                img_folder_name = os.path.join(character_output_dir, f'{i // 5}')
+                image_path = os.path.join(img_folder_name, f'{i % 5}_original.png')
                 image.save(image_path)
 
             # write texts into one json
@@ -763,8 +738,6 @@ def main(args: DictConfig) -> None:
         train(args)
     elif args.mode == 'sample':
         sample(args)
-    elif args.mode == 'adapt':
-        adapt(args)
     # below is for the unseen character adaptation benchmark
     elif args.mode == 'train_unseen':
         train_unseen(args)

@@ -1,2 +1,2 @@
-test = ' eddy talks to crong and crong looks at eddy. eddy points to the right and crong looks at the front. crong walks a few step on the stairs.crong turns back with a worried look on his face. eddy talks while spreading out his hand and holding a wand. eddy talks while closing his eyes and putting his hand on his chest. eddy opens his eyes and spreads out his arms.'
-print('harry' in test.lower())
+for i in range(0, 20, 4):
+    print(i)
