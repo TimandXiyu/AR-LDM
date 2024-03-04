@@ -10,14 +10,15 @@ ckpt_dir: ./ckpts # checkpoint directory
 run_name: flintstones_train_unseen # name for this run
 cur_char: # cache current character
 history_char: # cache history character, don't fill this field
+char_tokens: # cache unseen character tokens
 
 # task
 dataset: flintstones_unseen # pororo flintstones vistsis vistdii | flintstones_unseen
-task: visualization  # continuation visualization
+task: continuation  # continuation visualization
 
 # train
-init_lr: 5e-6
-warmup_epochs: 0  # warmup epochs
+init_lr: 1e-5
+warmup_epochs: 5  # warmup epochs
 max_epochs: 100  # max epochs
 train_model_file:  # model file for resume, none for train from scratch
 freeze_clip: False  # whether to freeze clip
@@ -44,12 +45,12 @@ unet_model:
   low_cpu_mem_usage: False
 
 flintstones_unseen:
-  target_chars: ["texarock_2", "slaghoople"]
+  target_chars: ["slaghoople", "texarock_2"]
   data_dir: ./data/flintstones_data
   target_dir: ./data/flintstones_data/target_chars
   hdf5_file: ./data/flintstones_rare-char_rmeoved.h5
   max_length: 91
-  new_tokens: [ "fred", "barney", "wilma", "betty", "dino", "slate"]
+  new_tokens: [ "fred", "barney", "wilma", "betty", "pebbles", "dino", "slate" ]
   clip_embedding_tokens: 49412
   blip_embedding_tokens: 30525
   use_handpick: True # using manual followings

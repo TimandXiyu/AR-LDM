@@ -94,6 +94,7 @@ class ARLDM(pl.LightningModule):
         super(ARLDM, self).__init__()
         self.args = args
         self.steps_per_epoch = int(steps_per_epoch)
+        self.nominal_name_mapping = json.load(open(os.path.join(args.get(args.dataset).data_dir, 'char_name_mapping.json'), 'r'))
         """
             Configurations
         """
@@ -118,6 +119,30 @@ class ARLDM(pl.LightningModule):
 
         self.clip_tokenizer = CLIPTokenizer.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="tokenizer")
         self.blip_tokenizer = init_tokenizer()
+        # init clip and blip tokenizers same as dataloader to get the token id for unseen chars
+        self.clip_tokenizer.add_tokens(list(args.get(args.dataset).new_tokens), special_tokens=True)
+        self.blip_tokenizer.add_tokens(list(args.get(args.dataset).new_tokens), special_tokens=True)
+        self.ptm_clip_tokenizer_len = len(self.clip_tokenizer)
+        self.ptm_blip_tokenizer_len = len(self.blip_tokenizer)
+
+        nominal_names = []
+        self.target_chars = args.get(args.dataset).target_chars
+        for char in self.target_chars:
+            char_nominal_name = self.nominal_name_mapping[char][1]  # 1st ele is the nominal name, 2nd is the base token
+            nominal_names.append(char_nominal_name)
+        self.clip_tokenizer.add_tokens(nominal_names, special_tokens=True)
+        self.blip_tokenizer.add_tokens(nominal_names, special_tokens=True)
+
+        self.ada_clip_tokenizer_len = len(self.clip_tokenizer)
+        self.ada_blip_tokenizer_len = len(self.blip_tokenizer)
+
+        # get the token id for unseen chars
+        self.clip_token_ls = {}
+        self.blip_token_ls = {}
+        for names in nominal_names:
+            self.clip_token_ls[names] = self.clip_tokenizer.convert_tokens_to_ids(names)
+            self.blip_token_ls[names] = self.blip_tokenizer.convert_tokens_to_ids(names)
+
         self.blip_image_processor = transforms.Compose([
             transforms.Resize([224, 224]),
             transforms.ToTensor(),
@@ -157,17 +182,17 @@ class ARLDM(pl.LightningModule):
                                              num_train_timesteps=1000)
 
         # resize to the specified vocab size in the config, this is the vocab size of the pretrained model
-        clip_ptm_len = args.get(args.dataset).clip_embedding_tokens
-        blip_ptm_len = args.get(args.dataset).blip_embedding_tokens
-        self.text_encoder.resize_token_embeddings(clip_ptm_len)
-        self.mm_encoder.text_encoder.resize_token_embeddings(blip_ptm_len)
-        # add token for unseen character if in testing mode to align with the vocab size of the saved weight
+        # clip_ptm_len = args.get(args.dataset).clip_embedding_tokens
+        # blip_ptm_len = args.get(args.dataset).blip_embedding_tokens
+        self.text_encoder.resize_token_embeddings(self.ptm_clip_tokenizer_len)
+        self.mm_encoder.text_encoder.resize_token_embeddings(self.ptm_blip_tokenizer_len)
+
         if args.mode == 'test_unseen':
-            self.text_encoder.resize_token_embeddings(len(args.history_char) + clip_ptm_len)
-            self.mm_encoder.text_encoder.resize_token_embeddings(len(args.history_char) + blip_ptm_len)
+            self.text_encoder.resize_token_embeddings(self.ada_clip_tokenizer_len)
+            self.mm_encoder.text_encoder.resize_token_embeddings(self.ada_blip_tokenizer_len)
         elif args.mode == 'test_seen':
-            self.text_encoder.resize_token_embeddings(len(args.get(args.dataset).target_chars) + clip_ptm_len)
-            self.mm_encoder.text_encoder.resize_token_embeddings(len(args.get(args.dataset).target_chars) + blip_ptm_len)
+            self.text_encoder.resize_token_embeddings(self.ada_clip_tokenizer_len)
+            self.mm_encoder.text_encoder.resize_token_embeddings(self.ada_blip_tokenizer_len)
 
         self.freeze_params(self.vae.parameters())
         if args.freeze_resnet:
@@ -182,31 +207,59 @@ class ARLDM(pl.LightningModule):
             self.freeze_params(self.text_encoder.parameters())
             self.unfreeze_params(self.text_encoder.text_model.embeddings.token_embedding.parameters())
 
+    def text_emb_resize(self, clip_len, blip_len):
+        self.text_encoder.resize_token_embeddings(clip_len)
+        self.mm_encoder.text_encoder.resize_token_embeddings(blip_len)
 
     def add_token(self, existing_num, base_token):
-
+        print("Adding new embeddings for the unseen character token based on", base_token)
         clip_ptm_len = self.args.get(self.args.dataset).clip_embedding_tokens
         blip_ptm_len = self.args.get(self.args.dataset).blip_embedding_tokens
-
+        print("The existing clip embedding layer has dim", clip_ptm_len)
+        print("The existing blip embedding layer has dim", blip_ptm_len)
+        new_clip_token_id = list(self.clip_token_ls.values())[existing_num]
+        new_blip_token_id = list(self.blip_token_ls.values())[existing_num]
+        print("For current character, the corresponding token id is", new_clip_token_id, new_blip_token_id,
+              "for clip and blip")
         base_ids = self.clip_tokenizer(base_token).input_ids[1:-1]
         base_emb = self.text_encoder.text_model.embeddings.token_embedding.weight[base_ids]
 
-        new_num_embeddings = clip_ptm_len + existing_num + 1
-        new_embedding_layer = torch.nn.Embedding(new_num_embeddings, 768)
-        with torch.no_grad():
-            new_embedding_layer.weight[:clip_ptm_len + existing_num] = self.text_encoder.text_model.embeddings.token_embedding.weight
-            new_embedding_layer.weight[-1:] = base_emb
-            self.text_encoder.text_model.embeddings.token_embedding = new_embedding_layer
+        if new_clip_token_id + 1 <= clip_ptm_len: # the tokenizer might not append the new token to the end
+            print(f"In clip, the new token id {new_clip_token_id} is contained in the existing embedding layer")
+            new_num_embeddings = self.text_encoder.text_model.embeddings.token_embedding.num_embeddings
+            new_embedding_layer = torch.nn.Embedding(new_num_embeddings, 768)
+            with torch.no_grad():
+                new_embedding_layer.weight = self.text_encoder.text_model.embeddings.token_embedding.weight
+                new_embedding_layer.weight[new_clip_token_id] = base_emb
+                self.text_encoder.text_model.embeddings.token_embedding = new_embedding_layer
+        else:
+            print("In clip, the new token id is not contained in the existing embedding layer, adding one more dim")
+            new_num_embeddings = self.text_encoder.text_model.embeddings.token_embedding.num_embeddings + 1
+            new_embedding_layer = torch.nn.Embedding(new_num_embeddings, 768)
+            with torch.no_grad():
+                new_embedding_layer.weight[:self.text_encoder.text_model.embeddings.token_embedding.num_embeddings] = self.text_encoder.text_model.embeddings.token_embedding.weight
+                new_embedding_layer.weight[-1:] = base_emb
+                self.text_encoder.text_model.embeddings.token_embedding = new_embedding_layer
 
         base_ids = self.blip_tokenizer(base_token).input_ids[1:-1]
         base_emb = self.mm_encoder.text_encoder.embeddings.word_embeddings.weight[base_ids]
 
-        new_num_embeddings = blip_ptm_len + existing_num + 1
-        new_embedding_layer = torch.nn.Embedding(new_num_embeddings, 768)
-        with torch.no_grad():
-            new_embedding_layer.weight[:blip_ptm_len + existing_num] = self.mm_encoder.text_encoder.embeddings.word_embeddings.weight
-            new_embedding_layer.weight[-1:] = base_emb
-            self.mm_encoder.text_encoder.embeddings.word_embeddings = new_embedding_layer
+        if new_blip_token_id + 1 <= blip_ptm_len: # the tokenizer might not append the new token to the end
+            print(f"In blip, the new token id {new_blip_token_id} is contained in the existing embedding layer")
+            new_num_embeddings = self.mm_encoder.text_encoder.embeddings.word_embeddings.num_embeddings
+            new_embedding_layer = torch.nn.Embedding(new_num_embeddings, 768)
+            with torch.no_grad():
+                new_embedding_layer.weight = self.mm_encoder.text_encoder.embeddings.word_embeddings.weight
+                # new_embedding_layer.weight[new_blip_token_id] = base_emb
+                self.mm_encoder.text_encoder.embeddings.word_embeddings = new_embedding_layer
+        else:
+            print("In blip, the new token id is not contained in the existing embedding layer, adding one more dim")
+            new_num_embeddings = self.mm_encoder.text_encoder.embeddings.word_embeddings.num_embeddings + 1
+            new_embedding_layer = torch.nn.Embedding(new_num_embeddings, 768)
+            with torch.no_grad():
+                new_embedding_layer.weight[:self.mm_encoder.text_encoder.embeddings.word_embeddings.num_embeddings] = self.mm_encoder.text_encoder.embeddings.word_embeddings.weight
+                # new_embedding_layer.weight[-1:] = base_emb
+                self.mm_encoder.text_encoder.embeddings.word_embeddings = new_embedding_layer
 
     @staticmethod
     def freeze_params(params):
@@ -550,13 +603,11 @@ def train_unseen(args: DictConfig) -> None:
 
     logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
 
-    # load character mapping json
-    name_mapping = json.load(open(os.path.join(args.get(args.dataset).data_dir, 'char_name_mapping.json'), 'r'))
+    model.text_emb_resize(model.ada_clip_tokenizer_len, model.ada_blip_tokenizer_len)
+    # name_mapping = json.load(open(os.path.join(args.get(args.dataset).data_dir, 'char_name_mapping.json'), 'r'))
     for i, cur_char in enumerate(target_chars):
-        normal_name = name_mapping[cur_char]
-        # the tokenizer is in dataloader, this is to update the embedding of text models
-        # the tokenizer is simply init to translate all possible tokens without aligning the vocab size
-        model.add_token(i, normal_name[2])
+        # normal_name = name_mapping[cur_char]
+        # model.add_token(i, normal_name[2])
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=os.path.join(args.ckpt_dir, args.run_name),
@@ -603,6 +654,7 @@ def test_unseen(args: DictConfig) -> None:
         dataloader.setup('test_unseen')
         # test_model_file = args.test_model_file.replace('.ckpt', '-' + str(cur_char) + '.ckpt')
         model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
+        # model.text_emb_resize(model.ada_clip_tokenizer_len, model.ada_blip_tokenizer_len)
 
         predictor = pl.Trainer(
             accelerator='gpu',

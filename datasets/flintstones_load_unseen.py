@@ -49,7 +49,7 @@ class StoryDataset(Dataset):
         self.new_followings = json.load(open(os.path.join(self.data_dir, 'new_followings.json'), 'r'))
         self.seen_len = {"train": len(self.h5file['train']['text']), "test": len(self.h5file['test']['text'])}
         # get 10% random samples from train and test split of the h5 file
-        self.seen_train_indexes = random.sample(range(self.seen_len["train"]), 7)
+        self.seen_train_indexes = random.sample(range(self.seen_len["train"]), 0)
         self.seen_test_indexes = random.sample(range(self.seen_len["test"]), 400)
 
         self.unseen_char = dict()
@@ -140,6 +140,10 @@ class StoryDataset(Dataset):
         print("clip {} new tokens added".format(msg))
         msg = self.blip_tokenizer.add_tokens(nominal_names, special_tokens=True)
         print("blip {} new tokens added".format(msg))
+        print(f"In dataloader clip tokenizer, normal names: {nominal_names} added to tokenizer with ids: "
+              f"{self.clip_tokenizer.convert_tokens_to_ids(nominal_names)}")
+        print(f"In dataloader blip tokenizer, normal names: {nominal_names} added to tokenizer with ids: "
+              f"{self.blip_tokenizer.convert_tokens_to_ids(nominal_names)}")
 
         self.augment = transforms.Compose([
             transforms.ToPILImage(),
