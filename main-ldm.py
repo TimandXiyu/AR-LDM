@@ -89,9 +89,9 @@ class LightningDataset(pl.LightningDataModule):
         return len(self.trainloader)
 
 
-class ARLDM(pl.LightningModule):
+class LDM(pl.LightningModule):
     def __init__(self, args: DictConfig, steps_per_epoch=1):
-        super(ARLDM, self).__init__()
+        super(LDM, self).__init__()
         self.args = args
         self.steps_per_epoch = int(steps_per_epoch)
         """
@@ -117,24 +117,12 @@ class ARLDM(pl.LightningModule):
             self.inception = InceptionV3([block_idx])
 
         self.clip_tokenizer = CLIPTokenizer.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="tokenizer")
-        self.blip_tokenizer = init_tokenizer()
-        self.blip_image_processor = transforms.Compose([
-            transforms.Resize([224, 224]),
-            transforms.ToTensor(),
-            transforms.Normalize([0.48145466, 0.4578275, 0.40821073], [0.26862954, 0.26130258, 0.27577711])
-        ])
         self.max_length = args.get(args.dataset).max_length
 
-        blip_image_null_token = self.blip_image_processor(
-            Image.fromarray(np.zeros((224, 224, 3), dtype=np.uint8))).unsqueeze(0).float()
         clip_text_null_token = self.clip_tokenizer([""], padding="max_length", max_length=self.max_length,
-                                                   return_tensors="pt").input_ids
-        blip_text_null_token = self.blip_tokenizer([""], padding="max_length", max_length=self.max_length,
                                                    return_tensors="pt").input_ids
 
         self.register_buffer('clip_text_null_token', clip_text_null_token)
-        self.register_buffer('blip_text_null_token', blip_text_null_token)
-        self.register_buffer('blip_image_null_token', blip_image_null_token)
 
         self.text_encoder = CLIPTextModel.from_pretrained('runwayml/stable-diffusion-v1-5',
                                                           subfolder="text_encoder")
@@ -148,35 +136,22 @@ class ARLDM(pl.LightningModule):
 
         self.modal_type_embeddings = nn.Embedding(6, 768)
         self.time_embeddings = nn.Embedding(5, 768)
-        self.mm_encoder = blip_feature_extractor(
-            pretrained='https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_large.pth',
-            image_size=224, vit='large')
         self.vae = AutoencoderKL.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="vae")
         self.unet = UNet2DConditionModel.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="unet", tuning=args.unet_model.tuning, low_cpu_mem_usage=args.unet_model.low_cpu_mem_usage)
         self.noise_scheduler = DDPMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
                                              num_train_timesteps=1000)
 
-        # resize to the specified vocab size in the config, this is the vocab size of the pretrained model
         clip_ptm_len = args.get(args.dataset).clip_embedding_tokens
-        blip_ptm_len = args.get(args.dataset).blip_embedding_tokens
         self.text_encoder.resize_token_embeddings(clip_ptm_len)
-        self.mm_encoder.text_encoder.resize_token_embeddings(blip_ptm_len)
-        # add token for unseen character if in testing mode to align with the vocab size of the saved weight
         if args.mode == 'test_unseen':
             self.text_encoder.resize_token_embeddings(len(args.history_char) + clip_ptm_len)
-            self.mm_encoder.text_encoder.resize_token_embeddings(len(args.history_char) + blip_ptm_len)
         elif args.mode == 'test_seen':
             self.text_encoder.resize_token_embeddings(len(args.get(args.dataset).target_chars) + clip_ptm_len)
-            self.mm_encoder.text_encoder.resize_token_embeddings(len(args.get(args.dataset).target_chars) + blip_ptm_len)
 
         self.freeze_params(self.vae.parameters())
         if args.freeze_resnet:
             self.freeze_params(self.unet.parameters())
             self.unfreeze_params([p for n, p in self.unet.named_parameters() if "attention" in n])
-
-        if args.freeze_blip and hasattr(self, "mm_encoder"):
-            self.freeze_params(self.mm_encoder.parameters())
-            self.unfreeze_params(self.mm_encoder.text_encoder.embeddings.word_embeddings.parameters())
 
         if args.freeze_clip and hasattr(self, "text_encoder"):
             self.freeze_params(self.text_encoder.parameters())
@@ -186,7 +161,6 @@ class ARLDM(pl.LightningModule):
     def add_token(self, existing_num, base_token):
 
         clip_ptm_len = self.args.get(self.args.dataset).clip_embedding_tokens
-        blip_ptm_len = self.args.get(self.args.dataset).blip_embedding_tokens
 
         base_ids = self.clip_tokenizer(base_token).input_ids[1:-1]
         base_emb = self.text_encoder.text_model.embeddings.token_embedding.weight[base_ids]
@@ -197,16 +171,6 @@ class ARLDM(pl.LightningModule):
             new_embedding_layer.weight[:clip_ptm_len + existing_num] = self.text_encoder.text_model.embeddings.token_embedding.weight
             new_embedding_layer.weight[-1:] = base_emb
             self.text_encoder.text_model.embeddings.token_embedding = new_embedding_layer
-
-        base_ids = self.blip_tokenizer(base_token).input_ids[1:-1]
-        base_emb = self.mm_encoder.text_encoder.embeddings.word_embeddings.weight[base_ids]
-
-        new_num_embeddings = blip_ptm_len + existing_num + 1
-        new_embedding_layer = torch.nn.Embedding(new_num_embeddings, 768)
-        with torch.no_grad():
-            new_embedding_layer.weight[:blip_ptm_len + existing_num] = self.mm_encoder.text_encoder.embeddings.word_embeddings.weight
-            new_embedding_layer.weight[-1:] = base_emb
-            self.mm_encoder.text_encoder.embeddings.word_embeddings = new_embedding_layer
 
     @staticmethod
     def freeze_params(params):
@@ -237,8 +201,6 @@ class ARLDM(pl.LightningModule):
     def forward(self, batch):
         if self.args.freeze_clip and hasattr(self, "text_encoder"):
             self.text_encoder.eval()
-        if self.args.freeze_blip and hasattr(self, "mm_encoder"):
-            self.mm_encoder.eval()
         images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts = batch
         B, V, S = captions.shape
         src_V = V + 1 if self.task == 'continuation' else V
@@ -253,19 +215,10 @@ class ARLDM(pl.LightningModule):
         classifier_free_idx = np.random.rand(B * V) < 0.1
 
         caption_embeddings = self.text_encoder(captions, attention_mask).last_hidden_state  # B * V, S, D
-        source_embeddings = self.mm_encoder(source_images, source_caption, source_attention_mask,
-                                            mode='multimodal').reshape(B, src_V * S, -1)
-        source_embeddings = source_embeddings.repeat_interleave(V, dim=0)
         caption_embeddings[classifier_free_idx] = \
             self.text_encoder(self.clip_text_null_token).last_hidden_state[0]
-        source_embeddings[classifier_free_idx] = \
-            self.mm_encoder(self.blip_image_null_token, self.blip_text_null_token, attention_mask=None,
-                            mode='multimodal')[0].repeat(src_V, 1)
         caption_embeddings += self.modal_type_embeddings(torch.tensor(0, device=self.device))
-        source_embeddings += self.modal_type_embeddings(torch.tensor(1, device=self.device))
-        source_embeddings += self.time_embeddings(
-            torch.arange(src_V, device=self.device).repeat_interleave(S, dim=0))
-        encoder_hidden_states = torch.cat([caption_embeddings, source_embeddings], dim=1)
+        encoder_hidden_states = caption_embeddings
 
         attention_mask = torch.cat(
             [attention_mask, source_attention_mask.reshape(B, src_V * S).repeat_interleave(V, dim=0)], dim=1)
@@ -300,35 +253,23 @@ class ARLDM(pl.LightningModule):
         source_images = torch.flatten(source_images, 0, 1)
         source_caption = torch.flatten(source_caption, 0, 1)
         source_attention_mask = torch.flatten(source_attention_mask, 0, 1)
-        # text emb for all target pairs
+
         caption_embeddings = self.text_encoder(captions, attention_mask).last_hidden_state  # B * V, S, D
-        # mm emb for all pairs
-        source_embeddings = self.mm_encoder(source_images, source_caption, source_attention_mask,
-                                            mode='multimodal').reshape(B, src_V * S, -1)
         caption_embeddings += self.modal_type_embeddings(torch.tensor(0, device=self.device))
-        source_embeddings += self.modal_type_embeddings(torch.tensor(1, device=self.device))
-        source_embeddings += self.time_embeddings(
-            torch.arange(src_V, device=self.device).repeat_interleave(S, dim=0))
-        source_embeddings = source_embeddings.repeat_interleave(V, dim=0) # repeat for each target pair
-        encoder_hidden_states = torch.cat([caption_embeddings, source_embeddings], dim=1)
+        encoder_hidden_states = caption_embeddings
 
         attention_mask = torch.cat(
             [attention_mask, source_attention_mask.reshape(B, src_V * S).repeat_interleave(V, dim=0)], dim=1)
         attention_mask = ~(attention_mask.bool())  # B * V, (src_V + 1) * S
-        # Generate the image-level mask for auto-regressive generation
+        # B, V, V, S
         square_mask = torch.triu(torch.ones((V, V), device=self.device)).bool()
         square_mask = square_mask.unsqueeze(0).unsqueeze(-1).expand(B, V, V, S)
         square_mask = square_mask.reshape(B * V, V * S)
         attention_mask[:, -V * S:] = torch.logical_or(square_mask, attention_mask[:, -V * S:])
 
         uncond_caption_embeddings = self.text_encoder(self.clip_text_null_token).last_hidden_state
-        uncond_source_embeddings = self.mm_encoder(self.blip_image_null_token, self.blip_text_null_token,
-                                                   attention_mask=None, mode='multimodal').repeat(1, src_V, 1)
         uncond_caption_embeddings += self.modal_type_embeddings(torch.tensor(0, device=self.device))
-        uncond_source_embeddings += self.modal_type_embeddings(torch.tensor(1, device=self.device))
-        uncond_source_embeddings += self.time_embeddings(
-            torch.arange(src_V, device=self.device).repeat_interleave(S, dim=0))
-        uncond_embeddings = torch.cat([uncond_caption_embeddings, uncond_source_embeddings], dim=1)
+        uncond_embeddings = uncond_caption_embeddings
         uncond_embeddings = uncond_embeddings.expand(B * V, -1, -1)
 
         encoder_hidden_states = torch.cat([uncond_embeddings, encoder_hidden_states])
@@ -346,20 +287,6 @@ class ARLDM(pl.LightningModule):
                                        attention_mask[:, :, i].reshape(2 * B, (src_V + 1) * S),
                                        self.args.resolution, self.args.resolution, self.args.num_inference_steps, self.args.guidance_scale, 0.0)
             images += new_image
-
-            new_image = torch.stack([self.blip_image_processor(im) for im in new_image]).to(self.device)
-            new_embedding = self.mm_encoder(new_image,  # B,C,H,W
-                                            source_caption.reshape(B, src_V, S)[:, i + src_V - V],
-                                            source_attention_mask.reshape(B, src_V, S)[:, i + src_V - V],
-                                            mode='multimodal')  # B, S, D
-            new_embedding = new_embedding.repeat_interleave(V, dim=0)
-            new_embedding += self.modal_type_embeddings(torch.tensor(1, device=self.device))
-            new_embedding += self.time_embeddings(torch.tensor(i + src_V - V, device=self.device))
-
-            encoder_hidden_states = encoder_hidden_states[1].reshape(B * V, (src_V + 1) * S, -1)
-            # update the BLIP embedding, i=1, [:, 1+1+5-4 * 768:1+2+5-4 * 768]
-            encoder_hidden_states[:, (i + 1 + src_V - V) * S:(i + 2 + src_V - V) * S] = new_embedding
-            encoder_hidden_states = torch.cat([uncond_embeddings, encoder_hidden_states])
 
         return original_images, images, texts
 
