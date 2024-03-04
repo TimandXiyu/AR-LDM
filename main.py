@@ -652,9 +652,8 @@ def test_unseen(args: DictConfig) -> None:
             args['history_char'].append(cur_char)
         dataloader = LightningDataset(args)
         dataloader.setup('test_unseen')
-        # test_model_file = args.test_model_file.replace('.ckpt', '-' + str(cur_char) + '.ckpt')
-        model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
-        # model.text_emb_resize(model.ada_clip_tokenizer_len, model.ada_blip_tokenizer_len)
+        test_model_file = args.test_model_file.replace('.ckpt', '-' + str(cur_char) + '.ckpt')
+        model = ARLDM.load_from_checkpoint(test_model_file, args=args, strict=False)
 
         predictor = pl.Trainer(
             accelerator='gpu',
@@ -754,6 +753,51 @@ def test_seen(args: DictConfig) -> None:
         with open(text_path, 'w') as f:
             json.dump(texts, f, indent=4)
 
+def custom_unseen(args: DictConfig) -> None:
+    dataloader = LightningDataset(args)
+    dataloader.setup('custom_unseen')
+    model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
+
+    predictor = pl.Trainer(
+        accelerator='gpu',
+        devices=args.gpu_ids,
+        max_epochs=-1,
+        benchmark=True,
+        strategy=DDPStrategy(find_unused_parameters=False),
+        precision=16
+    )
+    predictions = predictor.predict(model, dataloader)
+    if args.calculate_fid:
+        ori = np.array([elem for sublist in predictions for elem in sublist[1]])
+        gen = np.array([elem for sublist in predictions for elem in sublist[2]])
+        fid = calculate_fid_given_features(ori, gen)
+        print('FID: {}'.format(fid))
+
+    generated_images = [elem for sublist in predictions for elem in sublist[0]]
+    original_images = [elem for sublist in predictions for elem in sublist[3]]
+    texts = [elem for sublist in predictions for elem in sublist[4]]
+
+    if not os.path.exists(args.sample_output_dir):
+        os.makedirs(args.sample_output_dir, exist_ok=True)
+
+    if args.sample_output_dir is not None:
+        for i, image in enumerate(generated_images):
+            character_output_dir = os.path.join(args.sample_output_dir, 'custom_unseen')
+            if not os.path.exists(character_output_dir):
+                os.makedirs(character_output_dir)
+            img_folder_name = os.path.join(character_output_dir, f'{i // 5:04d}')
+            if not os.path.exists(img_folder_name):
+                os.makedirs(img_folder_name, exist_ok=True)
+            image_path = os.path.join(img_folder_name, f'{i % 5:04d}_generated.png')
+            image.save(image_path)
+
+        for i, image in enumerate(original_images):
+            character_output_dir = os.path.join(args.sample_output_dir, 'custom_unseen')
+            img_folder_name = os.path.join(character_output_dir, f'{i // 5:04d}')
+            image_path = os.path.join(img_folder_name, f'{i % 5:04d}_original.png')
+            image.save(image_path)
+
+
 
 def calculate_fid_clipscore(args: DictConfig) -> None:
     import json
@@ -783,7 +827,7 @@ def calculate_fid_clipscore(args: DictConfig) -> None:
             pass
 
 
-@hydra.main(config_path=".", config_name="config")
+@hydra.main(config_path=".", config_name="config-test")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)
@@ -801,6 +845,8 @@ def main(args: DictConfig) -> None:
         test_unseen(args)
     elif args.mode == 'test_seen':
         test_seen(args)
+    elif args.mode == 'custom_unseen':
+        custom_unseen(args)
 
 
 if __name__ == '__main__':
