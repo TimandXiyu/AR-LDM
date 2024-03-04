@@ -201,16 +201,12 @@ class LDM(pl.LightningModule):
     def forward(self, batch):
         if self.args.freeze_clip and hasattr(self, "text_encoder"):
             self.text_encoder.eval()
-        images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts = batch
+        images, captions, attention_mask, _, _, _, texts = batch
         B, V, S = captions.shape
         src_V = V + 1 if self.task == 'continuation' else V
         images = torch.flatten(images, 0, 1)
         captions = torch.flatten(captions, 0, 1)
         attention_mask = torch.flatten(attention_mask, 0, 1)
-        source_images = torch.flatten(source_images, 0, 1)
-        source_caption = torch.flatten(source_caption, 0, 1)
-        source_attention_mask = torch.flatten(source_attention_mask, 0, 1)
-        # 1 is not masked, 0 is masked
 
         classifier_free_idx = np.random.rand(B * V) < 0.1
 
@@ -220,8 +216,6 @@ class LDM(pl.LightningModule):
         caption_embeddings += self.modal_type_embeddings(torch.tensor(0, device=self.device))
         encoder_hidden_states = caption_embeddings
 
-        attention_mask = torch.cat(
-            [attention_mask, source_attention_mask.reshape(B, src_V * S).repeat_interleave(V, dim=0)], dim=1)
         attention_mask = ~(attention_mask.bool())  # B * V, (src_V + 1) * S
         attention_mask[classifier_free_idx] = False
 
@@ -399,7 +393,7 @@ class LDM(pl.LightningModule):
 def train(args: DictConfig) -> None:
     dataloader = LightningDataset(args)
     dataloader.setup('fit')
-    model = ARLDM(args, steps_per_epoch=dataloader.get_length_of_train_dataloader() / len(args.gpu_ids))
+    model = LDM(args, steps_per_epoch=dataloader.get_length_of_train_dataloader() / len(args.gpu_ids))
 
     logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
 
@@ -436,7 +430,7 @@ def sample(args: DictConfig) -> None:
     # assert args.gpu_ids == 1 or len(args.gpu_ids) == 1, "Only one GPU is supported in test mode"
     dataloader = LightningDataset(args)
     dataloader.setup('test')
-    model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
+    model = LDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
 
     predictor = pl.Trainer(
         accelerator='gpu',
@@ -472,7 +466,7 @@ def sample(args: DictConfig) -> None:
 def train_unseen(args: DictConfig) -> None:
     target_chars = args.get(args.dataset).target_chars
 
-    model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
+    model = LDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
 
     logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
 
@@ -527,7 +521,7 @@ def test_unseen(args: DictConfig) -> None:
         dataloader = LightningDataset(args)
         dataloader.setup('test_unseen')
         test_model_file = args.test_model_file.replace('.ckpt', '-' + str(cur_char) + '.ckpt')
-        model = ARLDM.load_from_checkpoint(test_model_file, args=args, strict=False)
+        model = LDM.load_from_checkpoint(test_model_file, args=args, strict=False)
 
         predictor = pl.Trainer(
             accelerator='gpu',
@@ -579,7 +573,7 @@ def test_unseen(args: DictConfig) -> None:
 def test_seen(args: DictConfig) -> None:
     dataloader = LightningDataset(args)
     dataloader.setup('test_seen')
-    model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
+    model = LDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
 
     predictor = pl.Trainer(
         accelerator='gpu',
@@ -655,7 +649,7 @@ def calculate_fid_clipscore(args: DictConfig) -> None:
             pass
 
 
-@hydra.main(config_path=".", config_name="config-test")
+@hydra.main(config_path=".", config_name="config-pretrain")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)

@@ -49,7 +49,7 @@ class StoryDataset(Dataset):
         self.new_followings = json.load(open(os.path.join(self.data_dir, 'new_followings.json'), 'r'))
         self.seen_len = {"train": len(self.h5file['train']['text']), "test": len(self.h5file['test']['text'])}
         # get 10% random samples from train and test split of the h5 file
-        self.seen_train_indexes = random.sample(range(self.seen_len["train"]), 4)
+        self.seen_train_indexes = random.sample(range(self.seen_len["train"]), 7)
         self.seen_test_indexes = random.sample(range(self.seen_len["test"]), 400)
 
         self.unseen_char = dict()
@@ -143,7 +143,7 @@ class StoryDataset(Dataset):
 
         self.augment = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize([256, 256]),
+            transforms.Resize([512, 512]),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5])
         ])

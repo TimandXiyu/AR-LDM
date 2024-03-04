@@ -222,9 +222,11 @@ class ARLDM(pl.LightningModule):
         optimizer = torch.optim.AdamW(self.parameters(),
                                       lr=self.args.init_lr,
                                       weight_decay=1e-4)
+        warm_up_steps = self.args.warmup_epochs * self.steps_per_epoch / self.args.grad_accumulation_steps
+        max_step = self.args.max_epochs * self.steps_per_epoch / self.args.grad_accumulation_steps
         scheduler = LinearWarmupCosineAnnealingLR(optimizer,
-                                                  warmup_epochs=self.args.warmup_epochs * self.steps_per_epoch,
-                                                  max_epochs=self.args.max_epochs * self.steps_per_epoch)
+                                                  warmup_epochs=warm_up_steps,
+                                                  max_epochs=max_step)
         optim_dict = {
             'optimizer': optimizer,
             'lr_scheduler': {
@@ -488,7 +490,6 @@ def train(args: DictConfig) -> None:
     callback_list = [lr_monitor, checkpoint_callback]
 
     trainer = pl.Trainer(
-        accumulate_grad_batches=2,
         accelerator='gpu',
         devices=args.gpu_ids,
         max_epochs=args.max_epochs,
@@ -566,6 +567,7 @@ def train_unseen(args: DictConfig) -> None:
         lr_monitor = LearningRateMonitor(logging_interval='step')
         callback_list = [lr_monitor, checkpoint_callback]
         trainer = pl.Trainer(
+            accumulate_grad_batches=args.grad_accumulation_steps,
             accelerator='gpu',
             devices=args.gpu_ids,
             max_epochs=args.max_epochs,
@@ -599,8 +601,8 @@ def test_unseen(args: DictConfig) -> None:
             args['history_char'].append(cur_char)
         dataloader = LightningDataset(args)
         dataloader.setup('test_unseen')
-        test_model_file = args.test_model_file.replace('.ckpt', '-' + str(cur_char) + '.ckpt')
-        model = ARLDM.load_from_checkpoint(test_model_file, args=args, strict=False)
+        # test_model_file = args.test_model_file.replace('.ckpt', '-' + str(cur_char) + '.ckpt')
+        model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
 
         predictor = pl.Trainer(
             accelerator='gpu',
@@ -638,8 +640,9 @@ def test_unseen(args: DictConfig) -> None:
 
             for i, image in enumerate(original_images):
                 character_output_dir = os.path.join(args.sample_output_dir, cur_char)
-                img_folder_name = os.path.join(character_output_dir, f'{i // 5}')
-                image_path = os.path.join(img_folder_name, f'{i % 5}_original.png')
+                frame_count = 4 if args.task == "continuation" else 5
+                img_folder_name = os.path.join(character_output_dir, f'{i // frame_count}')
+                image_path = os.path.join(img_folder_name, f'{i % frame_count}_original.png')
                 image.save(image_path)
 
             # write texts into one json
@@ -728,7 +731,7 @@ def calculate_fid_clipscore(args: DictConfig) -> None:
             pass
 
 
-@hydra.main(config_path=".", config_name="config-test")
+@hydra.main(config_path=".", config_name="config")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)
