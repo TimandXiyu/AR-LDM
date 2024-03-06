@@ -49,7 +49,7 @@ import clip
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images/"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_adapted_official_vis/"
     eval_target = args.eval_target
     data_dir = [os.path.join(data_dir, targets) for targets in eval_target]
 

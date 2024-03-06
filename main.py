@@ -637,7 +637,7 @@ def train_unseen(args: DictConfig) -> None:
             strategy=DDPStrategy(find_unused_parameters=False),
             num_sanity_val_steps=0,
             gradient_clip_val=1.0,
-            limit_val_batches=0.0
+            limit_val_batches=0.0,
         )
         # adding a new item to the config
         args['cur_char'] = cur_char
@@ -659,8 +659,8 @@ def test_unseen(args: DictConfig) -> None:
             args['history_char'].append(cur_char)
         dataloader = LightningDataset(args)
         dataloader.setup('test_unseen')
-        # test_model_file = args.test_model_file.replace('.ckpt', '-' + str(cur_char) + '.ckpt')
-        model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
+        test_model_file = args.test_model_file.replace('.ckpt', '-' + str(cur_char) + '.ckpt')
+        model = ARLDM.load_from_checkpoint(test_model_file, args=args, strict=False)
 
         predictor = pl.Trainer(
             accelerator='gpu',
@@ -674,7 +674,9 @@ def test_unseen(args: DictConfig) -> None:
         generated_images = [elem for sublist in predictions for elem in sublist[0]]
         original_images = [elem for sublist in predictions for elem in sublist[3]]
         texts = [elem for sublist in predictions for elem in sublist[4]]
-        indexes = [elem for sublist in predictions for elem in sublist[5]] # unique identifiers for each story
+        indexes = [elem for sublist in predictions for elem in sublist[5]]
+        indexes = [int(i) for i in indexes]
+        # unique identifiers for each story
 
         if not os.path.exists(args.sample_output_dir):
             os.makedirs(args.sample_output_dir, exist_ok=True)
@@ -684,26 +686,32 @@ def test_unseen(args: DictConfig) -> None:
                 character_output_dir = os.path.join(args.sample_output_dir, cur_char)
                 if not os.path.exists(character_output_dir):
                     os.makedirs(character_output_dir)
-                img_folder_name = os.path.join(character_output_dir, f'{i}')
+                img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
                 if not os.path.exists(img_folder_name):
                     os.makedirs(img_folder_name, exist_ok=True)
                 for j, image in enumerate(story):
                     image_path = os.path.join(img_folder_name, f'{j}_generated.png')
                     image.save(image_path)
 
-            for i, image in enumerate(original_images):
+            # group original images based on length
+            original_images = [original_images[i:i + 5] for i in range(0, len(original_images), 5)] \
+                if args.task == 'visualization' else [original_images[i:i + 4] for i in range(0, len(original_images), 4)]
+            for i, story in enumerate(original_images):
                 character_output_dir = os.path.join(args.sample_output_dir, cur_char)
-                frame_count = 4 if args.task == "continuation" else 5
-                img_folder_name = os.path.join(character_output_dir, f'{i // frame_count}')
-                image_path = os.path.join(img_folder_name, f'{i % frame_count}_original.png')
-                image.save(image_path)
+                img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
+                if not os.path.exists(img_folder_name):
+                    os.makedirs(img_folder_name, exist_ok=True)
+                for j, image in enumerate(story):
+                    image_path = os.path.join(img_folder_name, f'{j}_original.png')
+                    image.save(image_path)
 
-            # write texts into one json
-            character_output_dir = os.path.join(args.sample_output_dir, cur_char)
-            text_path = os.path.join(character_output_dir, 'texts.json')
-            with open(text_path, 'w') as f:
-                # write with indents
-                json.dump(texts, f, indent=4)
+            # saving texts for each story
+            for i, story in enumerate(texts):
+                character_output_dir = os.path.join(args.sample_output_dir, cur_char)
+                img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
+                text_path = os.path.join(img_folder_name, 'texts.json')
+                with open(text_path, 'w') as f:
+                    json.dump(story, f, indent=4)
 
 def test_seen(args: DictConfig) -> None:
     dataloader = LightningDataset(args)
