@@ -59,7 +59,7 @@ class BLIP_Base(nn.Module):
             # return multimodel features
             image_embeds = self.visual_encoder(image)
             image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(image.device)
-
+            # create a text same shape as text
             text[:, 0] = self.tokenizer.enc_token_id
             output = self.text_encoder(text,
                                        attention_mask=attention_mask,

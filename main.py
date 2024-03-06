@@ -14,7 +14,7 @@ from omegaconf import DictConfig
 from pl_bolts.optimizers.lr_scheduler import LinearWarmupCosineAnnealingLR
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.strategies import DDPStrategy
+from pytorch_lightning.strategies import DDPStrategy, DataParallelStrategy
 from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import transforms
@@ -66,6 +66,8 @@ class LightningDataset(pl.LightningDataModule):
             self.test_data = data.StoryDataset("test_seen", self.args)
         if stage == "test_unseen":
             self.test_data = data.StoryDataset("test_unseen", self.args)
+        if stage == "custom_unseen":
+            self.test_data = data.CustomStory(self.args)
 
     def train_dataloader(self):
         if not hasattr(self, 'trainloader'):
@@ -100,7 +102,7 @@ class ARLDM(pl.LightningModule):
         """
         self.task = args.task
 
-        if args.mode == 'sample' or args.mode == 'custom_sample' or args.mode == 'test_unseen' or args.mode == 'test_seen':
+        if args.mode == 'sample' or args.mode == 'custom_unseen' or args.mode == 'test_unseen' or args.mode == 'test_seen':
             if args.scheduler == "pndm":
                 self.scheduler = PNDMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
                                                skip_prk_steps=True)
@@ -181,16 +183,16 @@ class ARLDM(pl.LightningModule):
         self.noise_scheduler = DDPMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
                                              num_train_timesteps=1000)
 
-        # resize to the specified vocab size in the config, this is the vocab size of the pretrained model
-        # clip_ptm_len = args.get(args.dataset).clip_embedding_tokens
-        # blip_ptm_len = args.get(args.dataset).blip_embedding_tokens
         self.text_encoder.resize_token_embeddings(self.ptm_clip_tokenizer_len)
         self.mm_encoder.text_encoder.resize_token_embeddings(self.ptm_blip_tokenizer_len)
 
-        if args.mode == 'test_unseen':
+        if args.mode == 'test_unseen' and args.prompt_modification:
             self.text_encoder.resize_token_embeddings(self.ada_clip_tokenizer_len)
             self.mm_encoder.text_encoder.resize_token_embeddings(self.ada_blip_tokenizer_len)
         elif args.mode == 'test_seen':
+            self.text_encoder.resize_token_embeddings(self.ada_clip_tokenizer_len)
+            self.mm_encoder.text_encoder.resize_token_embeddings(self.ada_blip_tokenizer_len)
+        elif args.mode == 'custom_unseen':
             self.text_encoder.resize_token_embeddings(self.ada_clip_tokenizer_len)
             self.mm_encoder.text_encoder.resize_token_embeddings(self.ada_blip_tokenizer_len)
 
@@ -294,7 +296,16 @@ class ARLDM(pl.LightningModule):
             self.text_encoder.eval()
         if self.args.freeze_blip and hasattr(self, "mm_encoder"):
             self.mm_encoder.eval()
-        images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts = batch
+        images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index = batch
+        """
+        images: [B, V, 3, H, W]
+        captions: [B, V, S]
+        attention_mask: [B, V, S]
+        source_images: [B, src_V, 3, H, W]
+        source_caption: [B, src_V, S]
+        source_attention_mask: [B, src_V, S]
+        texts: [B, V, S]
+        """
         B, V, S = captions.shape
         src_V = V + 1 if self.task == 'continuation' else V
         images = torch.flatten(images, 0, 1)
@@ -309,7 +320,8 @@ class ARLDM(pl.LightningModule):
 
         caption_embeddings = self.text_encoder(captions, attention_mask).last_hidden_state  # B * V, S, D
         source_embeddings = self.mm_encoder(source_images, source_caption, source_attention_mask,
-                                            mode='multimodal').reshape(B, src_V * S, -1)
+                                            mode='multimodal')
+        source_embeddings = source_embeddings.reshape(B, src_V * S, -1)
         source_embeddings = source_embeddings.repeat_interleave(V, dim=0)
         caption_embeddings[classifier_free_idx] = \
             self.text_encoder(self.clip_text_null_token).last_hidden_state[0]
@@ -331,8 +343,9 @@ class ARLDM(pl.LightningModule):
         square_mask = torch.triu(torch.ones((V, V), device=self.device)).bool()
         square_mask = square_mask.unsqueeze(0).unsqueeze(-1).expand(B, V, V, S)
         square_mask = square_mask.reshape(B * V, V * S)
+        _square_mask = square_mask.clone().cpu().detach().numpy()
         attention_mask[:, -V * S:] = torch.logical_or(square_mask, attention_mask[:, -V * S:])
-
+        _attention_mask = attention_mask.clone().cpu().detach().numpy()
         latents = self.vae.encode(images).latent_dist.sample()
         latents = latents * 0.18215
 
@@ -346,7 +359,7 @@ class ARLDM(pl.LightningModule):
         return loss
 
     def sample(self, batch):
-        original_images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts = batch
+        original_images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index = batch
         B, V, S = captions.shape
         src_V = V + 1 if self.task == 'continuation' else V
         original_images = torch.flatten(original_images, 0, 1)
@@ -416,7 +429,7 @@ class ARLDM(pl.LightningModule):
             encoder_hidden_states[:, (i + 1 + src_V - V) * S:(i + 2 + src_V - V) * S] = new_embedding
             encoder_hidden_states = torch.cat([uncond_embeddings, encoder_hidden_states])
 
-        return original_images, images, texts
+        return original_images, images, texts, index
 
     def training_step(self, batch, batch_idx):
         loss = self(batch)
@@ -430,7 +443,7 @@ class ARLDM(pl.LightningModule):
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         BATCH_SIZE = batch[0].shape[0]
         STORY_LEN = batch[0].shape[1]
-        original_images, images, texts = self.sample(batch)
+        original_images, images, texts, index = self.sample(batch)
         if self.args.calculate_fid:
             original_images = original_images.cpu().numpy().astype('uint8')
             original_images = [Image.fromarray(im, 'RGB') for im in original_images]
@@ -455,7 +468,7 @@ class ARLDM(pl.LightningModule):
             _tmp.append(img_of_story)
 
         images_t = _tmp
-        return images_t, ori, gen, original_images, reshape_text
+        return images_t, ori, gen, original_images, reshape_text, index
 
     def diffusion(self, encoder_hidden_states, attention_mask, height, width, num_inference_steps, guidance_scale, eta):
         latents = torch.randn((encoder_hidden_states.shape[0] // 2, self.unet.in_channels, height // 8, width // 8),
@@ -569,9 +582,7 @@ def sample(args: DictConfig) -> None:
         accelerator='gpu',
         devices=args.gpu_ids,
         max_epochs=-1,
-        benchmark=True,
-        strategy=DDPStrategy(find_unused_parameters=False),
-        precision=16
+        benchmark=True
     )
     predictions = predictor.predict(model, dataloader)
     images = [elem for sublist in predictions for elem in sublist[0]]
@@ -604,10 +615,7 @@ def train_unseen(args: DictConfig) -> None:
     logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
 
     model.text_emb_resize(model.ada_clip_tokenizer_len, model.ada_blip_tokenizer_len)
-    # name_mapping = json.load(open(os.path.join(args.get(args.dataset).data_dir, 'char_name_mapping.json'), 'r'))
     for i, cur_char in enumerate(target_chars):
-        # normal_name = name_mapping[cur_char]
-        # model.add_token(i, normal_name[2])
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=os.path.join(args.ckpt_dir, args.run_name),
@@ -627,7 +635,6 @@ def train_unseen(args: DictConfig) -> None:
             log_every_n_steps=1,
             callbacks=callback_list,
             strategy=DDPStrategy(find_unused_parameters=False),
-            precision=16,
             num_sanity_val_steps=0,
             gradient_clip_val=1.0,
             limit_val_batches=0.0
@@ -652,8 +659,8 @@ def test_unseen(args: DictConfig) -> None:
             args['history_char'].append(cur_char)
         dataloader = LightningDataset(args)
         dataloader.setup('test_unseen')
-        test_model_file = args.test_model_file.replace('.ckpt', '-' + str(cur_char) + '.ckpt')
-        model = ARLDM.load_from_checkpoint(test_model_file, args=args, strict=False)
+        # test_model_file = args.test_model_file.replace('.ckpt', '-' + str(cur_char) + '.ckpt')
+        model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
 
         predictor = pl.Trainer(
             accelerator='gpu',
@@ -667,11 +674,7 @@ def test_unseen(args: DictConfig) -> None:
         generated_images = [elem for sublist in predictions for elem in sublist[0]]
         original_images = [elem for sublist in predictions for elem in sublist[3]]
         texts = [elem for sublist in predictions for elem in sublist[4]]
-        if args.calculate_fid:
-            ori = np.array([elem for sublist in predictions for elem in sublist[1]])
-            gen = np.array([elem for sublist in predictions for elem in sublist[2]])
-            fid = calculate_fid_given_features(ori, gen)
-            print('FID: {}'.format(fid))
+        indexes = [elem for sublist in predictions for elem in sublist[5]] # unique identifiers for each story
 
         if not os.path.exists(args.sample_output_dir):
             os.makedirs(args.sample_output_dir, exist_ok=True)
@@ -681,7 +684,6 @@ def test_unseen(args: DictConfig) -> None:
                 character_output_dir = os.path.join(args.sample_output_dir, cur_char)
                 if not os.path.exists(character_output_dir):
                     os.makedirs(character_output_dir)
-                # create folder named by the index of the story
                 img_folder_name = os.path.join(character_output_dir, f'{i}')
                 if not os.path.exists(img_folder_name):
                     os.makedirs(img_folder_name, exist_ok=True)
@@ -767,64 +769,23 @@ def custom_unseen(args: DictConfig) -> None:
         precision=16
     )
     predictions = predictor.predict(model, dataloader)
-    if args.calculate_fid:
-        ori = np.array([elem for sublist in predictions for elem in sublist[1]])
-        gen = np.array([elem for sublist in predictions for elem in sublist[2]])
-        fid = calculate_fid_given_features(ori, gen)
-        print('FID: {}'.format(fid))
 
     generated_images = [elem for sublist in predictions for elem in sublist[0]]
-    original_images = [elem for sublist in predictions for elem in sublist[3]]
-    texts = [elem for sublist in predictions for elem in sublist[4]]
 
     if not os.path.exists(args.sample_output_dir):
         os.makedirs(args.sample_output_dir, exist_ok=True)
 
     if args.sample_output_dir is not None:
-        for i, image in enumerate(generated_images):
+        for i, story in enumerate(generated_images):
             character_output_dir = os.path.join(args.sample_output_dir, 'custom_unseen')
             if not os.path.exists(character_output_dir):
                 os.makedirs(character_output_dir)
-            img_folder_name = os.path.join(character_output_dir, f'{i // 5:04d}')
+            img_folder_name = os.path.join(character_output_dir, f'{i}')
             if not os.path.exists(img_folder_name):
                 os.makedirs(img_folder_name, exist_ok=True)
-            image_path = os.path.join(img_folder_name, f'{i % 5:04d}_generated.png')
-            image.save(image_path)
-
-        for i, image in enumerate(original_images):
-            character_output_dir = os.path.join(args.sample_output_dir, 'custom_unseen')
-            img_folder_name = os.path.join(character_output_dir, f'{i // 5:04d}')
-            image_path = os.path.join(img_folder_name, f'{i % 5:04d}_original.png')
-            image.save(image_path)
-
-
-
-def calculate_fid_clipscore(args: DictConfig) -> None:
-    import json
-    # load generated images from folder
-    # obtain all dir names in the folder
-    output_root = './ckpt/output_images'
-    char_dirs = os.listdir(output_root)
-    # read all images path as list for each dir
-    all_images = {}
-    reference_id = {}
-    for char_dir in char_dirs:
-        char_dir_path = os.path.join(output_root, char_dir)
-        images = os.listdir(char_dir_path)
-        images = [os.path.join(char_dir_path, img) for img in images]
-        all_images[char_dir] = images
-        # reference image id needs to present in the dir to find the original images
-        reference_id[char_dir] = json.load(open(os.path.join(char_dir_path, 'reference_id.json')))
-    if args.dataset == 'flintstones_unseen':
-        # load .npy files from flintstones
-        for id in reference_id:
-            reference_id[id] = np.load(reference_id[id])
-            pass
-    elif args.dataset == 'pororo_unseen':
-        # load .png files from pororo
-        for id in reference_id:
-            reference_id[id] = [Image.open(reference_id[id])]
-            pass
+            for j, image in enumerate(story):
+                image_path = os.path.join(img_folder_name, f'{j}_generated.png')
+                image.save(image_path)
 
 
 @hydra.main(config_path=".", config_name="config-test")

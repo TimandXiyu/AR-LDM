@@ -1,6 +1,6 @@
 # device
 mode: train_unseen
-gpu_ids: [3]  # gpu ids
+gpu_ids: [1]  # gpu ids
 batch_size: 1 # each item denotes one story
 num_workers: 8 # number of workers
 num_cpu_cores: -1  # number of cpu cores
@@ -14,7 +14,7 @@ char_tokens: # cache unseen character tokens
 
 # task
 dataset: flintstones_unseen # pororo flintstones vistsis vistdii | flintstones_unseen
-task: continuation  # continuation visualization
+task: visualization  # continuation visualization
 
 # train
 init_lr: 1e-5

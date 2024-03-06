@@ -207,21 +207,25 @@ class StoryDataset(Dataset):
             images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in story]
             images = [np.load(img) for img in images]
             images = [img[np.random.randint(0, img.shape[0])] for img in images]
-            placeholder_name = self.nominal_name_mapping[self.cur_char][0]
-            special_token = self.nominal_name_mapping[self.cur_char][1]
-            if self.cur_char not in self.unseen_with_dir:
-                texts = [self.descriptions[i] for i in story]
-                texts = [text.lower() for text in texts]
-                texts = [text.replace(self.cur_char, special_token) for text in texts]
+            if self.args.prompt_modification: # inject unique tokens to the prompt
+                placeholder_name = self.nominal_name_mapping[self.cur_char][0]
+                special_token = self.nominal_name_mapping[self.cur_char][1]
+                if self.cur_char not in self.unseen_with_dir:
+                    texts = [self.descriptions[i] for i in story]
+                    texts = [text.lower() for text in texts]
+                    texts = [text.replace(self.cur_char, special_token) for text in texts]
+                else:
+                    texts = []
+                    for id in story:
+                        try:
+                            anno = self.cur_char_anno[id]
+                            anno = anno.replace(placeholder_name, special_token)
+                            texts.append(anno)
+                        except KeyError:
+                            texts.append(self.descriptions[id])
             else:
-                texts = []
-                for id in story:
-                    try:
-                        anno = self.cur_char_anno[id]
-                        anno = anno.replace(placeholder_name, special_token)
-                        texts.append(anno)
-                    except KeyError:
-                        texts.append(self.descriptions[id])
+                texts = [self.descriptions[i] for i in story]
+                pass
         else:
             raise ValueError("subset must be either train, test_seen, or test_unseen")
 
@@ -249,7 +253,7 @@ class StoryDataset(Dataset):
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
 
-        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts
+        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index
 
     def __len__(self):
         seen_train_len = len(self.seen_train_indexes)
@@ -262,6 +266,52 @@ class StoryDataset(Dataset):
             return self.early_stop if self.early_stop else unseen_test_len
         elif self.subset == 'test_seen':
             return self.early_stop if self.early_stop else seen_test_len
+
+class CustomStory(StoryDataset):
+    def __init__(self, args, subset='test_unseen'):
+        super(CustomStory, self).__init__(subset, args=args)
+        print("Attention! Make sure you are using the correct group of target characters,"
+              "otherwise the special tokens might not be loaded correctly!")
+        self.prompts = self.load_prompts(self.args.custom_prompts)
+
+    def load_prompts(self, prompts_file):
+        with open(prompts_file, 'r') as f:
+            lines = f.read().strip().split('\n')
+            prompts = [lines[i:i + 5] for i in range(0, len(lines), 6)]  # 6 due to 5 lines and 1 empty line
+        return prompts
+
+    def __len__(self):
+        return len(self.prompts)
+
+    def __getitem__(self, index):
+        # Use zeros as placeholders for images
+        images = torch.zeros([5, 3, 256, 256])
+        source_images = torch.zeros([5, 3, 224, 224])
+
+        # Use the loaded prompts instead of the text from h5
+        texts = self.prompts[index]
+
+        # Tokenize caption using CLIPTokenizer
+        tokenized = self.clip_tokenizer(
+            texts[1:] if self.args.task == 'continuation' else texts,
+            padding="max_length",
+            max_length=self.max_length,
+            truncation=False,
+            return_tensors="pt",
+        )
+        captions, attention_mask = tokenized['input_ids'], tokenized['attention_mask']
+
+        # Tokenize caption using blip tokenizer
+        tokenized = self.blip_tokenizer(
+            texts,
+            padding="max_length",
+            max_length=self.max_length,
+            truncation=False,
+            return_tensors="pt",
+        )
+        source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
+
+        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts
 
 
 @hydra.main(config_path="..", config_name="config")
