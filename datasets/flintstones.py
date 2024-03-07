@@ -95,7 +95,7 @@ class StoryDataset(Dataset):
             return_tensors="pt",
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
-        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts
+        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index
     """
     images: [5, 3, 256, 256]
     captions: [5, 91]

@@ -11,13 +11,14 @@ run_name: flintstones_train_unseen # name for this run
 cur_char: # cache current character
 history_char: # cache history character, don't fill this field
 char_tokens: # cache unseen character tokens
+inject_lora: True # whether to inject lora
 
 # task
 dataset: flintstones_unseen # pororo flintstones vistsis vistdii | flintstones_unseen
 task: visualization  # continuation visualization
 
 # train
-init_lr: 1e-5
+init_lr: 1e-4
 warmup_epochs: 5  # warmup epochs
 max_epochs: 100  # max epochs
 train_model_file:  # model file for resume, none for train from scratch

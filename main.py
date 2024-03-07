@@ -24,7 +24,6 @@ from fid_utils import calculate_fid_given_features
 from models.blip_override.blip import blip_feature_extractor, init_tokenizer
 from models.diffusers_override.unet_2d_condition import UNet2DConditionModel
 from models.inception import InceptionV3
-from pytorch_lightning.callbacks import TQDMProgressBar
 from lora_diffusion import inject_trainable_lora
 import itertools
 import json
@@ -180,6 +179,9 @@ class ARLDM(pl.LightningModule):
             image_size=224, vit='large')
         self.vae = AutoencoderKL.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="vae")
         self.unet = UNet2DConditionModel.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="unet", tuning=args.unet_model.tuning, low_cpu_mem_usage=args.unet_model.low_cpu_mem_usage)
+        if args.inject_lora:
+            self.unet.requires_grad_(False)
+            self.unet_lora_params, self.train_names = inject_trainable_lora(self.unet, r=32)
         self.noise_scheduler = DDPMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
                                              num_train_timesteps=1000)
 
@@ -197,9 +199,10 @@ class ARLDM(pl.LightningModule):
             self.mm_encoder.text_encoder.resize_token_embeddings(self.ada_blip_tokenizer_len)
 
         self.freeze_params(self.vae.parameters())
-        if args.freeze_resnet:
+        if args.freeze_resnet and not args.inject_lora:
             self.freeze_params(self.unet.parameters())
             self.unfreeze_params([p for n, p in self.unet.named_parameters() if "attention" in n])
+
 
         if args.freeze_blip and hasattr(self, "mm_encoder"):
             self.freeze_params(self.mm_encoder.parameters())
@@ -209,59 +212,20 @@ class ARLDM(pl.LightningModule):
             self.freeze_params(self.text_encoder.parameters())
             self.unfreeze_params(self.text_encoder.text_model.embeddings.token_embedding.parameters())
 
+        # if args.inject_lora:
+        #     print("Unet Lora Parameters")
+        #     for name, param in self.unet.named_parameters():
+        #         print(name, param.requires_grad)
+        #     print("Text Encoder Parameters")
+        #     for name, param in self.text_encoder.named_parameters():
+        #         print(name, param.requires_grad)
+        #     print("MM Encoder Parameters")
+        #     for name, param in self.mm_encoder.named_parameters():
+        #         print(name, param.requires_grad)
+
     def text_emb_resize(self, clip_len, blip_len):
         self.text_encoder.resize_token_embeddings(clip_len)
         self.mm_encoder.text_encoder.resize_token_embeddings(blip_len)
-
-    def add_token(self, existing_num, base_token):
-        print("Adding new embeddings for the unseen character token based on", base_token)
-        clip_ptm_len = self.args.get(self.args.dataset).clip_embedding_tokens
-        blip_ptm_len = self.args.get(self.args.dataset).blip_embedding_tokens
-        print("The existing clip embedding layer has dim", clip_ptm_len)
-        print("The existing blip embedding layer has dim", blip_ptm_len)
-        new_clip_token_id = list(self.clip_token_ls.values())[existing_num]
-        new_blip_token_id = list(self.blip_token_ls.values())[existing_num]
-        print("For current character, the corresponding token id is", new_clip_token_id, new_blip_token_id,
-              "for clip and blip")
-        base_ids = self.clip_tokenizer(base_token).input_ids[1:-1]
-        base_emb = self.text_encoder.text_model.embeddings.token_embedding.weight[base_ids]
-
-        if new_clip_token_id + 1 <= clip_ptm_len: # the tokenizer might not append the new token to the end
-            print(f"In clip, the new token id {new_clip_token_id} is contained in the existing embedding layer")
-            new_num_embeddings = self.text_encoder.text_model.embeddings.token_embedding.num_embeddings
-            new_embedding_layer = torch.nn.Embedding(new_num_embeddings, 768)
-            with torch.no_grad():
-                new_embedding_layer.weight = self.text_encoder.text_model.embeddings.token_embedding.weight
-                new_embedding_layer.weight[new_clip_token_id] = base_emb
-                self.text_encoder.text_model.embeddings.token_embedding = new_embedding_layer
-        else:
-            print("In clip, the new token id is not contained in the existing embedding layer, adding one more dim")
-            new_num_embeddings = self.text_encoder.text_model.embeddings.token_embedding.num_embeddings + 1
-            new_embedding_layer = torch.nn.Embedding(new_num_embeddings, 768)
-            with torch.no_grad():
-                new_embedding_layer.weight[:self.text_encoder.text_model.embeddings.token_embedding.num_embeddings] = self.text_encoder.text_model.embeddings.token_embedding.weight
-                new_embedding_layer.weight[-1:] = base_emb
-                self.text_encoder.text_model.embeddings.token_embedding = new_embedding_layer
-
-        base_ids = self.blip_tokenizer(base_token).input_ids[1:-1]
-        base_emb = self.mm_encoder.text_encoder.embeddings.word_embeddings.weight[base_ids]
-
-        if new_blip_token_id + 1 <= blip_ptm_len: # the tokenizer might not append the new token to the end
-            print(f"In blip, the new token id {new_blip_token_id} is contained in the existing embedding layer")
-            new_num_embeddings = self.mm_encoder.text_encoder.embeddings.word_embeddings.num_embeddings
-            new_embedding_layer = torch.nn.Embedding(new_num_embeddings, 768)
-            with torch.no_grad():
-                new_embedding_layer.weight = self.mm_encoder.text_encoder.embeddings.word_embeddings.weight
-                # new_embedding_layer.weight[new_blip_token_id] = base_emb
-                self.mm_encoder.text_encoder.embeddings.word_embeddings = new_embedding_layer
-        else:
-            print("In blip, the new token id is not contained in the existing embedding layer, adding one more dim")
-            new_num_embeddings = self.mm_encoder.text_encoder.embeddings.word_embeddings.num_embeddings + 1
-            new_embedding_layer = torch.nn.Embedding(new_num_embeddings, 768)
-            with torch.no_grad():
-                new_embedding_layer.weight[:self.mm_encoder.text_encoder.embeddings.word_embeddings.num_embeddings] = self.mm_encoder.text_encoder.embeddings.word_embeddings.weight
-                # new_embedding_layer.weight[-1:] = base_emb
-                self.mm_encoder.text_encoder.embeddings.word_embeddings = new_embedding_layer
 
     @staticmethod
     def freeze_params(params):
@@ -274,9 +238,20 @@ class ARLDM(pl.LightningModule):
             param.requires_grad = True
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(),
-                                      lr=self.args.init_lr,
-                                      weight_decay=1e-4)
+        # configure different lr for different modules, 1e-4 for unet, 1e-5 for text_encoder and mm_encoder
+        param_groups = [
+            {"params": itertools.chain(*self.unet_lora_params), "lr": 1e-4},
+            {"params": self.text_encoder.parameters(), "lr": 1e-5},
+            {"params": self.mm_encoder.parameters(), "lr": 1e-5}
+        ]
+        if self.args.inject_lora:
+            optimizer = torch.optim.AdamW(param_groups,
+                                          lr=self.args.init_lr,
+                                          weight_decay=1e-4)
+        else:
+            optimizer = torch.optim.AdamW(self.parameters(),
+                                         lr=self.args.init_lr,
+                                         weight_decay=1e-4)
         warm_up_steps = self.args.warmup_epochs * self.steps_per_epoch / self.args.grad_accumulation_steps
         max_step = self.args.max_epochs * self.steps_per_epoch / self.args.grad_accumulation_steps
         scheduler = LinearWarmupCosineAnnealingLR(optimizer,
@@ -444,9 +419,9 @@ class ARLDM(pl.LightningModule):
         BATCH_SIZE = batch[0].shape[0]
         STORY_LEN = batch[0].shape[1]
         original_images, images, texts, index = self.sample(batch)
+        original_images = original_images.cpu().numpy().astype('uint8')
+        original_images = [Image.fromarray(im, 'RGB') for im in original_images]
         if self.args.calculate_fid:
-            original_images = original_images.cpu().numpy().astype('uint8')
-            original_images = [Image.fromarray(im, 'RGB') for im in original_images]
             ori = self.inception_feature(original_images).cpu().numpy()
             gen = self.inception_feature(images).cpu().numpy()
         else:
@@ -573,7 +548,6 @@ def train(args: DictConfig) -> None:
 
 def sample(args: DictConfig) -> None:
     assert args.test_model_file is not None, "test_model_file cannot be None"
-    # assert args.gpu_ids == 1 or len(args.gpu_ids) == 1, "Only one GPU is supported in test mode"
     dataloader = LightningDataset(args)
     dataloader.setup('test')
     model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
@@ -582,30 +556,52 @@ def sample(args: DictConfig) -> None:
         accelerator='gpu',
         devices=args.gpu_ids,
         max_epochs=-1,
-        benchmark=True
+        benchmark=True,
+        strategy=DDPStrategy(find_unused_parameters=False),
+        precision=16
     )
     predictions = predictor.predict(model, dataloader)
-    images = [elem for sublist in predictions for elem in sublist[0]]
-    if args.calculate_fid:
-        ori = np.array([elem for sublist in predictions for elem in sublist[1]])
-        gen = np.array([elem for sublist in predictions for elem in sublist[2]])
-        fid = calculate_fid_given_features(ori, gen)
-        print('FID: {}'.format(fid))
+    generated_images = [elem for sublist in predictions for elem in sublist[0]]
+    original_images = [elem for sublist in predictions for elem in sublist[3]]
+    texts = [elem for sublist in predictions for elem in sublist[4]]
+    indexes = [elem for sublist in predictions for elem in sublist[5]]
+    indexes = [int(i) for i in indexes]
+    # unique identifiers for each story
+
     if not os.path.exists(args.sample_output_dir):
-        try:
-            os.mkdir(args.sample_output_dir)
-        except:
-            pass
+        os.makedirs(args.sample_output_dir, exist_ok=True)
+
     if args.sample_output_dir is not None:
-        for i, image in enumerate(images):
-            # Determine the folder name by the index of the image
-            folder_name = os.path.join(args.sample_output_dir, f'{i // 5:04d}')
-            # Create the folder if it doesn't exist
-            if not os.path.exists(folder_name):
-                os.makedirs(folder_name, exist_ok=True)
-            # Save the image in the corresponding folder
-            image_path = os.path.join(folder_name, f'{i % 5:04d}.png')
-            image.save(image_path)
+        for i, story in enumerate(generated_images):
+            character_output_dir = os.path.join(args.sample_output_dir)
+            if not os.path.exists(character_output_dir):
+                os.makedirs(character_output_dir)
+            img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
+            if not os.path.exists(img_folder_name):
+                os.makedirs(img_folder_name, exist_ok=True)
+            for j, image in enumerate(story):
+                image_path = os.path.join(img_folder_name, f'{j}_generated.png')
+                image.save(image_path)
+
+        # group original images based on length
+        original_images = [original_images[i:i + 5] for i in range(0, len(original_images), 5)] \
+            if args.task == 'visualization' else [original_images[i:i + 4] for i in range(0, len(original_images), 4)]
+        for i, story in enumerate(original_images):
+            character_output_dir = os.path.join(args.sample_output_dir)
+            img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
+            if not os.path.exists(img_folder_name):
+                os.makedirs(img_folder_name, exist_ok=True)
+            for j, image in enumerate(story):
+                image_path = os.path.join(img_folder_name, f'{j}_original.png')
+                image.save(image_path)
+
+        # saving texts for each story
+        for i, story in enumerate(texts):
+            character_output_dir = os.path.join(args.sample_output_dir)
+            img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
+            text_path = os.path.join(img_folder_name, 'texts.json')
+            with open(text_path, 'w') as f:
+                json.dump(story, f, indent=4)
 
 def train_unseen(args: DictConfig) -> None:
     target_chars = args.get(args.dataset).target_chars
@@ -638,6 +634,7 @@ def train_unseen(args: DictConfig) -> None:
             num_sanity_val_steps=0,
             gradient_clip_val=1.0,
             limit_val_batches=0.0,
+            precision=16
         )
         # adding a new item to the config
         args['cur_char'] = cur_char
@@ -807,7 +804,6 @@ def main(args: DictConfig) -> None:
         train(args)
     elif args.mode == 'sample':
         sample(args)
-    # below is for the unseen character adaptation benchmark
     elif args.mode == 'train_unseen':
         train_unseen(args)
     elif args.mode == 'test_unseen':
