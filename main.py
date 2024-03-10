@@ -181,7 +181,7 @@ class ARLDM(pl.LightningModule):
         self.unet = UNet2DConditionModel.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="unet", tuning=args.unet_model.tuning, low_cpu_mem_usage=args.unet_model.low_cpu_mem_usage)
         if args.inject_lora:
             self.unet.requires_grad_(False)
-            self.unet_lora_params, self.train_names = inject_trainable_lora(self.unet, r=32)
+            self.unet_lora_params, self.train_names = inject_trainable_lora(self.unet, r=16, scale=0.1)
         self.noise_scheduler = DDPMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
                                              num_train_timesteps=1000)
 
@@ -203,7 +203,6 @@ class ARLDM(pl.LightningModule):
             self.freeze_params(self.unet.parameters())
             self.unfreeze_params([p for n, p in self.unet.named_parameters() if "attention" in n])
 
-
         if args.freeze_blip and hasattr(self, "mm_encoder"):
             self.freeze_params(self.mm_encoder.parameters())
             self.unfreeze_params(self.mm_encoder.text_encoder.embeddings.word_embeddings.parameters())
@@ -212,16 +211,6 @@ class ARLDM(pl.LightningModule):
             self.freeze_params(self.text_encoder.parameters())
             self.unfreeze_params(self.text_encoder.text_model.embeddings.token_embedding.parameters())
 
-        # if args.inject_lora:
-        #     print("Unet Lora Parameters")
-        #     for name, param in self.unet.named_parameters():
-        #         print(name, param.requires_grad)
-        #     print("Text Encoder Parameters")
-        #     for name, param in self.text_encoder.named_parameters():
-        #         print(name, param.requires_grad)
-        #     print("MM Encoder Parameters")
-        #     for name, param in self.mm_encoder.named_parameters():
-        #         print(name, param.requires_grad)
 
     def text_emb_resize(self, clip_len, blip_len):
         self.text_encoder.resize_token_embeddings(clip_len)
@@ -238,13 +227,12 @@ class ARLDM(pl.LightningModule):
             param.requires_grad = True
 
     def configure_optimizers(self):
-        # configure different lr for different modules, 1e-4 for unet, 1e-5 for text_encoder and mm_encoder
-        param_groups = [
-            {"params": itertools.chain(*self.unet_lora_params), "lr": 1e-4},
-            {"params": self.text_encoder.parameters(), "lr": 1e-5},
-            {"params": self.mm_encoder.parameters(), "lr": 1e-5}
-        ]
         if self.args.inject_lora:
+            param_groups = [
+                {"params": itertools.chain(*self.unet_lora_params), "lr": 3e-4},
+                {"params": self.text_encoder.parameters(), "lr": 1e-5},
+                {"params": self.mm_encoder.parameters(), "lr": 1e-5}
+            ]
             optimizer = torch.optim.AdamW(param_groups,
                                           lr=self.args.init_lr,
                                           weight_decay=1e-4)
@@ -610,8 +598,10 @@ def train_unseen(args: DictConfig) -> None:
 
     logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
 
-    model.text_emb_resize(model.ada_clip_tokenizer_len, model.ada_blip_tokenizer_len)
     for i, cur_char in enumerate(target_chars):
+        model.text_emb_resize(model.ptm_clip_tokenizer_len + i + 1, model.ptm_blip_tokenizer_len + i + 1)
+        print(model.text_encoder.embeddings.word_embeddings.num_embeddings)
+        print(model.mm_encoder.embeddings.token_embedding.num_embeddings)
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=os.path.join(args.ckpt_dir, args.run_name),
@@ -793,7 +783,7 @@ def custom_unseen(args: DictConfig) -> None:
                 image.save(image_path)
 
 
-@hydra.main(config_path=".", config_name="config-test")
+@hydra.main(config_path=".", config_name="config")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)

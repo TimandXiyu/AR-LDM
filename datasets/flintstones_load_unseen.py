@@ -1,4 +1,6 @@
 import random
+import time
+from random import Random
 import hydra
 import pytorch_lightning as pl
 
@@ -49,8 +51,10 @@ class StoryDataset(Dataset):
         self.new_followings = json.load(open(os.path.join(self.data_dir, 'new_followings.json'), 'r'))
         self.seen_len = {"train": len(self.h5file['train']['text']), "test": len(self.h5file['test']['text'])}
         # get 10% random samples from train and test split of the h5 file
-        self.seen_train_indexes = random.sample(range(self.seen_len["train"]), 0)
-        self.seen_test_indexes = random.sample(range(self.seen_len["test"]), 400)
+        self.rand = Random()
+        self.rand.seed(time.time())
+        self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 10)
+        self.seen_test_indexes = self.rand.sample(range(self.seen_len["test"]), 400)
 
         self.unseen_char = dict()
 

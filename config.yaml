@@ -1,17 +1,17 @@
 # device
 mode: train_unseen
-gpu_ids: [3]  # gpu ids
+gpu_ids: [2,3]  # gpu ids
 batch_size: 1 # each item denotes one story
 num_workers: 8 # number of workers
 num_cpu_cores: -1  # number of cpu cores
 grad_accumulation_steps: 1 # gradient accumulation steps
 seed: 0  # random seed
 ckpt_dir: ./ckpts # checkpoint directory
-run_name: flintstones_train_unseen # name for this run
+run_name: flintstones_train_5_unseen # name for this run
 cur_char: # cache current character
 history_char: # cache history character, don't fill this field
 char_tokens: # cache unseen character tokens
-inject_lora: True # whether to inject lora
+inject_lora: False # whether to inject lora
 
 # task
 dataset: flintstones_unseen # pororo flintstones vistsis vistdii | flintstones_unseen
@@ -19,13 +19,13 @@ task: visualization  # continuation visualization
 
 # train
 init_lr: 1e-4
-warmup_epochs: 5  # warmup epochs
-max_epochs: 100  # max epochs
+warmup_epochs: 1  # warmup epochs
+max_epochs: 10  # max epochs
 train_model_file:  # model file for resume, none for train from scratch
-freeze_clip: False  # whether to freeze clip
-freeze_blip: False  # whether to freeze blip
-freeze_resnet: False  # whether to freeze resnet
-save_freq: 100  # save frequency
+freeze_clip: True  # whether to freeze clip
+freeze_blip: True  # whether to freeze blip
+freeze_resnet: True  # whether to freeze resnet
+save_freq: 10  # save frequency
 
 # sample
 test_model_file: "/home/xiyu/projects/AR-LDM/ckpts/flintstones_official_ckpt/flintstones.ckpt" #model file for test
@@ -46,7 +46,7 @@ unet_model:
   low_cpu_mem_usage: False
 
 flintstones_unseen:
-  target_chars: ["slaghoople", "texarock_2"]
+  target_chars: ["slaghoople", "texarock_2", "gazoo", "theft", "yellow_tiger", "helmet_police", "piano_man", "red_hair_lady", "rockzilla", "texarock_1"]
   data_dir: ./data/flintstones_data
   target_dir: ./data/flintstones_data/target_chars
   hdf5_file: ./data/flintstones_rare-char_rmeoved.h5
