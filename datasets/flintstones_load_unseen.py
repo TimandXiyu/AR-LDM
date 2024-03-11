@@ -152,7 +152,7 @@ class StoryDataset(Dataset):
 
         self.augment = transforms.Compose([
             transforms.ToPILImage(),
-            transforms.Resize([512, 512]),
+            transforms.Resize([256, 256]),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5])
         ])
@@ -182,6 +182,20 @@ class StoryDataset(Dataset):
                 images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in story]
                 images = [np.load(img) for img in images]
                 images = [img[np.random.randint(0, img.shape[0])] for img in images]
+
+                # Generate flags for frames corresponding to the unseen character
+                unseen_flags = []
+                for id in story:
+                    if self.cur_char not in self.unseen_with_dir:
+                        if self.cur_char in self.descriptions[id].lower() or self.cur_char in [char.lower() for char in
+                                                                                               self.annotations[id][
+                                                                                                   'characters']]:
+                            unseen_flags.append(True)
+                        else:
+                            unseen_flags.append(False)
+                    else:
+                        unseen_flags.append(id in self.cur_char_anno)
+
                 placeholder_name = self.nominal_name_mapping[self.cur_char][0]
                 special_token = self.nominal_name_mapping[self.cur_char][1]
                 if self.cur_char not in self.unseen_with_dir:
@@ -207,11 +221,26 @@ class StoryDataset(Dataset):
                 idx = random.randint(0, 4)
                 images.append(im[idx * 128: (idx + 1) * 128])
             texts = self.h5file["test"]['text'][index].decode('utf-8').split('|')
+            unseen_flags = [False] * 5
         elif self.subset == 'test_unseen':
             story = self.unseen_test[index]
             images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in story]
             images = [np.load(img) for img in images]
             images = [img[np.random.randint(0, img.shape[0])] for img in images]
+
+            # Generate flags for frames corresponding to the unseen character
+            unseen_flags = []
+            for id in story:
+                if self.cur_char not in self.unseen_with_dir:
+                    if self.cur_char in self.descriptions[id].lower() or self.cur_char in [char.lower() for char in
+                                                                                           self.annotations[id][
+                                                                                               'characters']]:
+                        unseen_flags.append(True)
+                    else:
+                        unseen_flags.append(False)
+                else:
+                    unseen_flags.append(id in self.cur_char_anno)
+
             if self.args.prompt_modification: # inject unique tokens to the prompt
                 placeholder_name = self.nominal_name_mapping[self.cur_char][0]
                 special_token = self.nominal_name_mapping[self.cur_char][1]
@@ -230,7 +259,6 @@ class StoryDataset(Dataset):
                             texts.append(self.descriptions[id])
             else:
                 texts = [self.descriptions[i] for i in story]
-                pass
         else:
             raise ValueError("subset must be either train, test_seen, or test_unseen")
 
@@ -258,7 +286,7 @@ class StoryDataset(Dataset):
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
 
-        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index
+        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, unseen_flags
 
     def __len__(self):
         seen_train_len = len(self.seen_train_indexes)
@@ -329,7 +357,7 @@ class CustomStory(StoryDataset):
 def test_case(args):
     pl.seed_everything(args.seed)
 
-    story_dataset = StoryDataset('train', args=args)
+    story_dataset = StoryDataset('test_unseen', args=args)
     story_dataloader = DataLoader(story_dataset, batch_size=1, shuffle=False, num_workers=0)
 
     for batch in tqdm(story_dataloader):

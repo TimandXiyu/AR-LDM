@@ -254,12 +254,12 @@ class ARLDM(pl.LightningModule):
         }
         return optim_dict
 
-    def forward(self, batch):
+    def forward(self, batch, teacher_model=None):
         if self.args.freeze_clip and hasattr(self, "text_encoder"):
             self.text_encoder.eval()
         if self.args.freeze_blip and hasattr(self, "mm_encoder"):
             self.mm_encoder.eval()
-        images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index = batch
+        images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, unseen_flag = batch
         """
         images: [B, V, 3, H, W]
         captions: [B, V, S]
@@ -319,10 +319,19 @@ class ARLDM(pl.LightningModule):
 
         noise_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states, attention_mask).sample
         loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
+
+        if self.args.distillation:
+            with torch.no_grad():
+                teacher_noise_pred = teacher_model.unet(noisy_latents, timesteps, encoder_hidden_states,
+                                                        attention_mask).sample
+
+            # Calculate the distillation loss
+            distillation_loss = F.mse_loss(noise_pred, teacher_noise_pred)
+            loss = loss + self.args.distillation_weight * distillation_loss
         return loss
 
     def sample(self, batch):
-        original_images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index = batch
+        original_images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, unseen_flag = batch
         B, V, S = captions.shape
         src_V = V + 1 if self.task == 'continuation' else V
         original_images = torch.flatten(original_images, 0, 1)
@@ -392,10 +401,13 @@ class ARLDM(pl.LightningModule):
             encoder_hidden_states[:, (i + 1 + src_V - V) * S:(i + 2 + src_V - V) * S] = new_embedding
             encoder_hidden_states = torch.cat([uncond_embeddings, encoder_hidden_states])
 
-        return original_images, images, texts, index
+        return original_images, images, texts, index, unseen_flag
 
     def training_step(self, batch, batch_idx):
-        loss = self(batch)
+        if not self.args.distillation:
+            loss = self(batch)
+        else:
+            loss = self(batch, teacher_model=self.teacher_model)
         self.log('loss/train_loss', loss, on_step=True, on_epoch=False, sync_dist=True, prog_bar=True)
         return loss
 
@@ -406,7 +418,7 @@ class ARLDM(pl.LightningModule):
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         BATCH_SIZE = batch[0].shape[0]
         STORY_LEN = batch[0].shape[1]
-        original_images, images, texts, index = self.sample(batch)
+        original_images, images, texts, index, unseen_flag = self.sample(batch)
         original_images = original_images.cpu().numpy().astype('uint8')
         original_images = [Image.fromarray(im, 'RGB') for im in original_images]
         if self.args.calculate_fid:
@@ -422,16 +434,23 @@ class ARLDM(pl.LightningModule):
             for j in range(len(texts)):
                 _tmp.append(texts[j][i])
             reshape_text.append(_tmp)
+        # transpose the unseen flag
+        unseen_flag = [t.cpu().numpy() for t in unseen_flag]
+        reshape_unseen_flag = []
+        for i in range(len(unseen_flag[0])):
+            _tmp = []
+            for j in range(len(unseen_flag)):
+                _tmp.append(unseen_flag[j][i])
+            reshape_unseen_flag.append(_tmp)
         # transpose the image list
-        _tmp = []
+        reshape_image = []
         for i in range(0, BATCH_SIZE):
             img_of_story = []
             for j in range(i, BATCH_SIZE * STORY_LEN, BATCH_SIZE):
                 img_of_story.append(images[j])
-            _tmp.append(img_of_story)
+            reshape_image.append(img_of_story)
 
-        images_t = _tmp
-        return images_t, ori, gen, original_images, reshape_text, index
+        return reshape_image, ori, gen, original_images, reshape_text, index, reshape_unseen_flag
 
     def diffusion(self, encoder_hidden_states, attention_mask, height, width, num_inference_steps, guidance_scale, eta):
         latents = torch.randn((encoder_hidden_states.shape[0] // 2, self.unet.in_channels, height // 8, width // 8),
@@ -598,6 +617,13 @@ def train_unseen(args: DictConfig) -> None:
 
     logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
 
+    if args.distillation:
+        teacher_model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
+        teacher_model.eval()
+        for param in teacher_model.parameters():
+            param.requires_grad = False
+        model.teacher_model = teacher_model
+
     model.text_emb_resize(model.ada_clip_tokenizer_len, model.ada_blip_tokenizer_len)
 
     for i, cur_char in enumerate(target_chars):
@@ -607,6 +633,7 @@ def train_unseen(args: DictConfig) -> None:
             save_top_k=-1,
             every_n_epochs=args.save_freq,
             filename='{epoch}-' + str(cur_char),
+            save_weights_only=True
         )
         lr_monitor = LearningRateMonitor(logging_interval='step')
         callback_list = [lr_monitor, checkpoint_callback]
@@ -667,6 +694,7 @@ def test_unseen(args: DictConfig) -> None:
             texts = [elem for sublist in predictions for elem in sublist[4]]
             indexes = [elem for sublist in predictions for elem in sublist[5]]
             indexes = [int(i) for i in indexes]
+            unseen_flags = [elem for sublist in predictions for elem in sublist[6]]
 
             if not os.path.exists(args.sample_output_dir):
                 os.makedirs(args.sample_output_dir, exist_ok=True)
@@ -683,7 +711,10 @@ def test_unseen(args: DictConfig) -> None:
                     if not os.path.exists(img_folder_name):
                         os.makedirs(img_folder_name, exist_ok=True)
                     for j, image in enumerate(story):
-                        image_path = os.path.join(img_folder_name, f'{j}_generated.png')
+                        if unseen_flags[i][j]:
+                            image_path = os.path.join(img_folder_name, f'{j}_generated_eval.png')
+                        else:
+                            image_path = os.path.join(img_folder_name, f'{j}_generated.png')
                         image.save(image_path)
 
                 original_images = [original_images[i:i + 5] for i in range(0, len(original_images), 5)] \
@@ -695,7 +726,10 @@ def test_unseen(args: DictConfig) -> None:
                     if not os.path.exists(img_folder_name):
                         os.makedirs(img_folder_name, exist_ok=True)
                     for j, image in enumerate(story):
-                        image_path = os.path.join(img_folder_name, f'{j}_original.png')
+                        if unseen_flags[i][j]:
+                            image_path = os.path.join(img_folder_name, f'{j}_original_eval.png')
+                        else:
+                            image_path = os.path.join(img_folder_name, f'{j}_original.png')
                         image.save(image_path)
 
                 for i, story in enumerate(texts):

@@ -18,3 +18,5 @@ captions.txt
 /data/pororo_png/
 /data/flintstones_data/
 *.h5
+CLIP/
+pycocoevalcap/
