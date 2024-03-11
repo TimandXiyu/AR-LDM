@@ -16,8 +16,9 @@ from torch.utils.data import DataLoader
 import os
 import json
 import pickle
-
+import shutil
 from models.blip_override.blip import init_tokenizer
+from PIL import Image
 
 
 class StoryDataset(Dataset):
@@ -267,9 +268,15 @@ class StoryDataset(Dataset):
         if self.subset == 'train':
             return seen_train_len + unseen_train_len
         elif self.subset == 'test_unseen':
-            return self.early_stop if self.early_stop else unseen_test_len
+            if self.early_stop and unseen_test_len > self.early_stop:
+                return self.early_stop
+            else:
+                return unseen_test_len
         elif self.subset == 'test_seen':
-            return self.early_stop if self.early_stop else seen_test_len
+            if self.early_stop and seen_test_len > self.early_stop:
+                return self.early_stop
+            else:
+                return seen_test_len
 
 class CustomStory(StoryDataset):
     def __init__(self, args, subset='test_unseen'):
@@ -318,7 +325,7 @@ class CustomStory(StoryDataset):
         return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts
 
 
-@hydra.main(config_path="..", config_name="config")
+@hydra.main(config_path="..", config_name="config-debug")
 def test_case(args):
     pl.seed_everything(args.seed)
 

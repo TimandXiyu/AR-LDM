@@ -598,10 +598,9 @@ def train_unseen(args: DictConfig) -> None:
 
     logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
 
+    model.text_emb_resize(model.ada_clip_tokenizer_len, model.ada_blip_tokenizer_len)
+
     for i, cur_char in enumerate(target_chars):
-        model.text_emb_resize(model.ptm_clip_tokenizer_len + i + 1, model.ptm_blip_tokenizer_len + i + 1)
-        print(model.text_encoder.embeddings.word_embeddings.num_embeddings)
-        print(model.mm_encoder.embeddings.token_embedding.num_embeddings)
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=os.path.join(args.ckpt_dir, args.run_name),
@@ -637,15 +636,14 @@ def train_unseen(args: DictConfig) -> None:
 
         trainer.fit(model, dataloader, ckpt_path=args.train_model_file)
 
+
 def test_unseen(args: DictConfig) -> None:
     target_chars = args.get(args.dataset).target_chars
-    for i, cur_char in enumerate(target_chars):
+    for k, cur_char in enumerate(target_chars):
         args['history_char'] = []
         args['cur_char'] = cur_char
-        for j in range(i+1):
-            args['history_char'].append(cur_char)
-        dataloader = LightningDataset(args)
-        dataloader.setup('test_unseen')
+        for j in range(k + 1):
+            args['history_char'].append(target_chars[j])
         test_model_file = args.test_model_file.replace('.ckpt', '-' + str(cur_char) + '.ckpt')
         model = ARLDM.load_from_checkpoint(test_model_file, args=args, strict=False)
 
@@ -657,48 +655,55 @@ def test_unseen(args: DictConfig) -> None:
             strategy=DDPStrategy(find_unused_parameters=False),
             precision=16
         )
-        predictions = predictor.predict(model, dataloader)
-        generated_images = [elem for sublist in predictions for elem in sublist[0]]
-        original_images = [elem for sublist in predictions for elem in sublist[3]]
-        texts = [elem for sublist in predictions for elem in sublist[4]]
-        indexes = [elem for sublist in predictions for elem in sublist[5]]
-        indexes = [int(i) for i in indexes]
-        # unique identifiers for each story
 
-        if not os.path.exists(args.sample_output_dir):
-            os.makedirs(args.sample_output_dir, exist_ok=True)
+        for past_char in args['history_char']:
+            args['cur_char'] = past_char
+            dataloader = LightningDataset(args)
+            dataloader.setup('test_unseen')
 
-        if args.sample_output_dir is not None:
-            for i, story in enumerate(generated_images):
-                character_output_dir = os.path.join(args.sample_output_dir, cur_char)
-                if not os.path.exists(character_output_dir):
-                    os.makedirs(character_output_dir)
-                img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
-                if not os.path.exists(img_folder_name):
-                    os.makedirs(img_folder_name, exist_ok=True)
-                for j, image in enumerate(story):
-                    image_path = os.path.join(img_folder_name, f'{j}_generated.png')
-                    image.save(image_path)
+            predictions = predictor.predict(model, dataloader)
+            generated_images = [elem for sublist in predictions for elem in sublist[0]]
+            original_images = [elem for sublist in predictions for elem in sublist[3]]
+            texts = [elem for sublist in predictions for elem in sublist[4]]
+            indexes = [elem for sublist in predictions for elem in sublist[5]]
+            indexes = [int(i) for i in indexes]
 
-            # group original images based on length
-            original_images = [original_images[i:i + 5] for i in range(0, len(original_images), 5)] \
-                if args.task == 'visualization' else [original_images[i:i + 4] for i in range(0, len(original_images), 4)]
-            for i, story in enumerate(original_images):
-                character_output_dir = os.path.join(args.sample_output_dir, cur_char)
-                img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
-                if not os.path.exists(img_folder_name):
-                    os.makedirs(img_folder_name, exist_ok=True)
-                for j, image in enumerate(story):
-                    image_path = os.path.join(img_folder_name, f'{j}_original.png')
-                    image.save(image_path)
+            if not os.path.exists(args.sample_output_dir):
+                os.makedirs(args.sample_output_dir, exist_ok=True)
 
-            # saving texts for each story
-            for i, story in enumerate(texts):
-                character_output_dir = os.path.join(args.sample_output_dir, cur_char)
-                img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
-                text_path = os.path.join(img_folder_name, 'texts.json')
-                with open(text_path, 'w') as f:
-                    json.dump(story, f, indent=4)
+            if args.sample_output_dir is not None:
+                checkpoint_output_dir = os.path.join(args.sample_output_dir, f"{k}_{cur_char}")
+                os.makedirs(checkpoint_output_dir, exist_ok=True)
+
+                for i, story in enumerate(generated_images):
+                    character_output_dir = os.path.join(checkpoint_output_dir, past_char)
+                    if not os.path.exists(character_output_dir):
+                        os.makedirs(character_output_dir)
+                    img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
+                    if not os.path.exists(img_folder_name):
+                        os.makedirs(img_folder_name, exist_ok=True)
+                    for j, image in enumerate(story):
+                        image_path = os.path.join(img_folder_name, f'{j}_generated.png')
+                        image.save(image_path)
+
+                original_images = [original_images[i:i + 5] for i in range(0, len(original_images), 5)] \
+                    if args.task == 'visualization' else [original_images[i:i + 4] for i in
+                                                          range(0, len(original_images), 4)]
+                for i, story in enumerate(original_images):
+                    character_output_dir = os.path.join(checkpoint_output_dir, past_char)
+                    img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
+                    if not os.path.exists(img_folder_name):
+                        os.makedirs(img_folder_name, exist_ok=True)
+                    for j, image in enumerate(story):
+                        image_path = os.path.join(img_folder_name, f'{j}_original.png')
+                        image.save(image_path)
+
+                for i, story in enumerate(texts):
+                    character_output_dir = os.path.join(checkpoint_output_dir, past_char)
+                    img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
+                    text_path = os.path.join(img_folder_name, 'texts.json')
+                    with open(text_path, 'w') as f:
+                        json.dump(story, f, indent=4)
 
 def test_seen(args: DictConfig) -> None:
     dataloader = LightningDataset(args)
@@ -783,7 +788,7 @@ def custom_unseen(args: DictConfig) -> None:
                 image.save(image_path)
 
 
-@hydra.main(config_path=".", config_name="config")
+@hydra.main(config_path=".", config_name="config-test")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)
