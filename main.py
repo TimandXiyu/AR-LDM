@@ -1,5 +1,6 @@
 import inspect
 import os
+from typing import Dict, Any
 
 import hydra
 import numpy as np
@@ -118,6 +119,8 @@ class ARLDM(pl.LightningModule):
             block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
             self.inception = InceptionV3([block_idx])
 
+        if args.distillation:
+            self.teacher_model = None
         self.clip_tokenizer = CLIPTokenizer.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="tokenizer")
         self.blip_tokenizer = init_tokenizer()
         # init clip and blip tokenizers same as dataloader to get the token id for unseen chars
@@ -211,6 +214,19 @@ class ARLDM(pl.LightningModule):
             self.freeze_params(self.text_encoder.parameters())
             self.unfreeze_params(self.text_encoder.text_model.embeddings.token_embedding.parameters())
 
+    def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
+        # List to hold keys to remove
+        keys_to_remove = []
+
+        # Iterate over the keys in the state_dict
+        for key in checkpoint['state_dict'].keys():
+            # Check if key matches the pattern for parts to exclude
+            if key.startswith('teacher_model'):
+                keys_to_remove.append(key)
+
+        # Remove the specified keys from the state_dict
+        for key in keys_to_remove:
+            del checkpoint['state_dict'][key]
 
     def text_emb_resize(self, clip_len, blip_len):
         self.text_encoder.resize_token_embeddings(clip_len)
@@ -237,7 +253,12 @@ class ARLDM(pl.LightningModule):
                                           lr=self.args.init_lr,
                                           weight_decay=1e-4)
         else:
-            optimizer = torch.optim.AdamW(self.parameters(),
+            param_groups = [
+                {"params": self.unet.parameters(), "lr": 1e-5},
+                {"params": self.text_encoder.parameters(), "lr": 1e-5},
+                {"params": self.mm_encoder.parameters(), "lr": 1e-5}
+            ]
+            optimizer = torch.optim.AdamW(param_groups,
                                          lr=self.args.init_lr,
                                          weight_decay=1e-4)
         warm_up_steps = self.args.warmup_epochs * self.steps_per_epoch / self.args.grad_accumulation_steps
@@ -254,7 +275,7 @@ class ARLDM(pl.LightningModule):
         }
         return optim_dict
 
-    def forward(self, batch, teacher_model=None):
+    def forward(self, batch):
         if self.args.freeze_clip and hasattr(self, "text_encoder"):
             self.text_encoder.eval()
         if self.args.freeze_blip and hasattr(self, "mm_encoder"):
@@ -277,7 +298,8 @@ class ARLDM(pl.LightningModule):
         source_images = torch.flatten(source_images, 0, 1)
         source_caption = torch.flatten(source_caption, 0, 1)
         source_attention_mask = torch.flatten(source_attention_mask, 0, 1)
-        # 1 is not masked, 0 is masked
+        unseen_flag = torch.stack(unseen_flag, 0).transpose(1, 0)
+
 
         classifier_free_idx = np.random.rand(B * V) < 0.1
 
@@ -320,14 +342,19 @@ class ARLDM(pl.LightningModule):
         noise_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states, attention_mask).sample
         loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
 
-        if self.args.distillation:
+        if self.args.distillation and self.teacher_model is not None:
             with torch.no_grad():
-                teacher_noise_pred = teacher_model.unet(noisy_latents, timesteps, encoder_hidden_states,
+                teacher_noise_pred = self.teacher_model.unet(noisy_latents, timesteps, encoder_hidden_states,
                                                         attention_mask).sample
 
             # Calculate the distillation loss
-            distillation_loss = F.mse_loss(noise_pred, teacher_noise_pred)
-            loss = loss + self.args.distillation_weight * distillation_loss
+            distillation_loss = F.mse_loss(noise_pred, teacher_noise_pred, reduction='none')
+            seen_mask = ~unseen_flag.flatten()
+            if seen_mask.any():
+                distillation_loss = distillation_loss[seen_mask].mean()
+                loss = loss.mean() + self.args.distillation_weight * distillation_loss
+            else:
+                loss = loss.mean()
         return loss
 
     def sample(self, batch):
@@ -404,10 +431,7 @@ class ARLDM(pl.LightningModule):
         return original_images, images, texts, index, unseen_flag
 
     def training_step(self, batch, batch_idx):
-        if not self.args.distillation:
-            loss = self(batch)
-        else:
-            loss = self(batch, teacher_model=self.teacher_model)
+        loss = self(batch)
         self.log('loss/train_loss', loss, on_step=True, on_epoch=False, sync_dist=True, prog_bar=True)
         return loss
 
@@ -624,6 +648,7 @@ def train_unseen(args: DictConfig) -> None:
             param.requires_grad = False
         model.teacher_model = teacher_model
 
+
     model.text_emb_resize(model.ada_clip_tokenizer_len, model.ada_blip_tokenizer_len)
 
     for i, cur_char in enumerate(target_chars):
@@ -822,7 +847,7 @@ def custom_unseen(args: DictConfig) -> None:
                 image.save(image_path)
 
 
-@hydra.main(config_path=".", config_name="config-test")
+@hydra.main(config_path=".", config_name="config")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)

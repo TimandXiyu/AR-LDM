@@ -177,6 +177,7 @@ class StoryDataset(Dataset):
                     idx = random.randint(0, 4)
                     images.append(im[idx * 128: (idx + 1) * 128])
                 texts = self.h5file["train"]['text'][index].decode('utf-8').split('|')
+                unseen_flags = [False] * 5
             else:
                 story = self.unseen_train[index - len(self.seen_train_indexes)]
                 images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in story]

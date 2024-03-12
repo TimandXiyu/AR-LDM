@@ -23,7 +23,7 @@ import pandas as pd
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_adapted_conti_40stop_unseen_flagged/"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_3_adapted_conti_40stop_distill/"
 
     evaluator = Evaluation(args)
     fid_scores = []
@@ -31,7 +31,7 @@ def get_metrics(args: DictConfig) -> None:
     # Sort the checkpoint folders based on their numerical prefix
     ckpt_dirs = sorted(os.listdir(data_dir), key=lambda x: int(x.split('_', 1)[0]))
 
-    for ckpt_dir in ckpt_dirs:
+    for k, ckpt_dir in enumerate(ckpt_dirs):
         ckpt_path = os.path.join(data_dir, ckpt_dir)
         if os.path.isdir(ckpt_path):
             ckpt_fid_scores = []
@@ -77,10 +77,16 @@ def get_metrics(args: DictConfig) -> None:
         data[f'Checkpoint {i}'] = ckpt_fid_scores
 
     characters = [d.split('_', 1)[1] for d in ckpt_dirs]
-    df = pd.DataFrame(data, index=characters)
-    df.index.name = 'Character'
-    df.to_csv(csv_file)
+    max_length = max(len(values) for values in data.values())
 
+    for key in data:
+        data[key].extend([float('nan')] * (max_length - len(data[key])))
+
+    row_names = [i for i in characters]
+    df = pd.DataFrame.from_dict(data, orient='index', columns=row_names)
+
+    print(df.T)
+    df.T.to_csv(csv_file)
     print(f"FID scores saved to {csv_file}")
 
 class Evaluation(object):
