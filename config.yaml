@@ -7,7 +7,7 @@ num_cpu_cores: -1  # number of cpu cores
 grad_accumulation_steps: 1 # gradient accumulation steps
 seed: 0  # random seed
 ckpt_dir: ./ckpts # checkpoint directory
-run_name: flintstones_train_10_256_lr1e5_dis1_exclusive_loss # name for this run
+run_name: flintstones_us10_more_ref # name for this run
 cur_char: # cache current character
 history_char: # cache history character, don't fill this field
 char_tokens: # cache unseen character tokens
@@ -40,7 +40,7 @@ num_inference_steps: 100  # number of inference steps
 sample_output_dir: ./ckpts/output_images # output directory
 custom_prompts: ./datasets/fs_special_token.txt # custom prompts file, only used for custom_sample
 stop_sample_early: # only sample for a few stories
-resolution: 512 # resolution for sampling, keep the same as the training resolution
+resolution: 256 # resolution for sampling, keep the same as the training resolution
 
 # model config
 unet_model:

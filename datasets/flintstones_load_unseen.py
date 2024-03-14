@@ -54,7 +54,7 @@ class StoryDataset(Dataset):
         # get 10% random samples from train and test split of the h5 file
         self.rand = Random()
         self.rand.seed(time.time())
-        self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 10)
+        self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 25)
         self.seen_test_indexes = self.rand.sample(range(self.seen_len["test"]), 400)
 
         self.unseen_char = dict()

@@ -340,28 +340,20 @@ class ARLDM(pl.LightningModule):
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
         noise_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states, attention_mask).sample
-        mse_loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3])
+        loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
 
         if self.args.distillation and self.teacher_model is not None:
             with torch.no_grad():
                 teacher_noise_pred = self.teacher_model.unet(noisy_latents, timesteps, encoder_hidden_states,
                                                              attention_mask).sample
 
-            # Calculate the distillation loss for all samples
-            distillation_loss = F.mse_loss(noise_pred, teacher_noise_pred, reduction='none').mean([1, 2, 3])
-
-            # Create masks for seen and unseen samples
-            seen_mask = ~unseen_flag.flatten()
-            unseen_mask = unseen_flag.flatten()
-
-            # Apply the appropriate loss based on the mask
-            loss = torch.zeros_like(mse_loss)
-            loss[unseen_mask] = mse_loss[unseen_mask] # True if the sample is unseen
-            loss[seen_mask] = distillation_loss[seen_mask] * self.args.distillation_weight # True if the sample is seen
-
-            loss = loss.mean()
-        else:
-            loss = mse_loss.mean()
+            distillation_loss = F.mse_loss(noise_pred, teacher_noise_pred, reduction='none')
+            seen_mask = ~unseen_flag.flatten() # seen mask, flags sample True if seen
+            if seen_mask.any():
+                distillation_loss = distillation_loss[seen_mask].mean() # no distillation if all samples are unseen
+                loss = loss.mean() + self.args.distillation_weight * distillation_loss
+            else:
+                loss = loss.mean()
         return loss
 
     def sample(self, batch):

@@ -23,7 +23,7 @@ import pandas as pd
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_distill_1.5/"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_more_ref/"
 
     evaluator = Evaluation(args)
     fid_scores = []
@@ -71,7 +71,7 @@ def get_metrics(args: DictConfig) -> None:
             fid_scores.append(ckpt_fid_scores)
 
     # Save the FID scores as a CSV file
-    csv_file = "fid_scores_distill=15.csv"
+    csv_file = "fid_scores/fid_scores_more_ref.csv"
     data = {}
     for i, ckpt_fid_scores in enumerate(fid_scores):
         data[f'Checkpoint {i}'] = ckpt_fid_scores

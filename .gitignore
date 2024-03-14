@@ -20,3 +20,4 @@ captions.txt
 *.h5
 CLIP/
 pycocoevalcap/
+*.csv
