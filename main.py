@@ -280,7 +280,7 @@ class ARLDM(pl.LightningModule):
             self.text_encoder.eval()
         if self.args.freeze_blip and hasattr(self, "mm_encoder"):
             self.mm_encoder.eval()
-        images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, unseen_flag = batch
+        images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, unseen_flag, contrastive_caption, contrastive_mask = batch
         """
         images: [B, V, 3, H, W]
         captions: [B, V, S]
@@ -299,7 +299,15 @@ class ARLDM(pl.LightningModule):
         source_caption = torch.flatten(source_caption, 0, 1)
         source_attention_mask = torch.flatten(source_attention_mask, 0, 1)
         unseen_flag = torch.stack(unseen_flag, 0).transpose(1, 0)
-
+        if self.args.contrastive:
+            positive_caption = contrastive_caption.chunk(2, dim=1)[0]
+            negative_caption = contrastive_caption.chunk(2, dim=1)[1]
+            positive_mask = contrastive_mask.chunk(2, dim=1)[0]
+            negative_mask = contrastive_mask.chunk(2, dim=1)[1]
+            positive_caption = torch.flatten(positive_caption, 0, 1)
+            negative_caption = torch.flatten(negative_caption, 0, 1)
+            positive_mask = torch.flatten(positive_mask, 0, 1)
+            negative_mask = torch.flatten(negative_mask, 0, 1)
 
         classifier_free_idx = np.random.rand(B * V) < 0.1
 
@@ -324,13 +332,42 @@ class ARLDM(pl.LightningModule):
         attention_mask = ~(attention_mask.bool())  # B * V, (src_V + 1) * S
         attention_mask[classifier_free_idx] = False
 
+        if self.args.contrastive:
+            # Generate contrastive embeddings
+            positive_caption_embeddings = self.text_encoder(positive_caption, positive_mask).last_hidden_state
+            negative_caption_embeddings = self.text_encoder(negative_caption, negative_mask).last_hidden_state
+            positive_caption_embeddings += self.modal_type_embeddings(torch.tensor(0, device=self.device))
+            negative_caption_embeddings += self.modal_type_embeddings(torch.tensor(0, device=self.device))
+            _tmp1 = positive_mask.cpu().detach().numpy()
+            positive_mask = torch.cat(
+                [positive_mask, torch.zeros((B * V, src_V * S), device=self.device).bool()],
+                dim=1
+            )
+            _tmp2 = positive_mask.cpu().detach().numpy()
+            positive_mask = ~(positive_mask.bool())
+            _tmp3 = positive_mask.cpu().detach().numpy()
+            positive_embeddings = torch.cat(
+                [positive_caption_embeddings,
+                 torch.zeros(
+                (B * V, src_V * S, positive_caption_embeddings.shape[-1]), device=self.device)],
+                dim=1)
+
+            negative_mask = torch.cat(
+                [negative_mask, torch.zeros((B * V, src_V * S), device=self.device).bool()],
+                dim=1
+            )
+            negative_mask = ~(negative_mask.bool())
+            negative_embeddings = torch.cat(
+                [negative_caption_embeddings,
+                 torch.zeros(
+                     (B * V, src_V * S, negative_caption_embeddings.shape[-1]), device=self.device)],
+                dim=1)
+
         # B, V, V, S
         square_mask = torch.triu(torch.ones((V, V), device=self.device)).bool()
         square_mask = square_mask.unsqueeze(0).unsqueeze(-1).expand(B, V, V, S)
         square_mask = square_mask.reshape(B * V, V * S)
-        _square_mask = square_mask.clone().cpu().detach().numpy()
         attention_mask[:, -V * S:] = torch.logical_or(square_mask, attention_mask[:, -V * S:])
-        _attention_mask = attention_mask.clone().cpu().detach().numpy()
         latents = self.vae.encode(images).latent_dist.sample()
         latents = latents * 0.18215
 
@@ -342,6 +379,16 @@ class ARLDM(pl.LightningModule):
         noise_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states, attention_mask).sample
         loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
 
+        if self.args.contrastive:
+            positive_noise_pred = self.unet(noisy_latents, timesteps, positive_embeddings, positive_mask).sample
+            negative_noise_pred = self.unet(noisy_latents, timesteps, negative_embeddings, negative_mask).sample
+
+            # Compute the NT-Xent loss
+            contrastive_loss = self.nt_xent_loss(positive_noise_pred, negative_noise_pred, temperature=0.07)
+
+            # Add the contrastive loss to the total loss
+            loss = loss + self.args.contrastive_weight * contrastive_loss
+
         if self.args.distillation and self.teacher_model is not None:
             with torch.no_grad():
                 teacher_noise_pred = self.teacher_model.unet(noisy_latents, timesteps, encoder_hidden_states,
@@ -351,10 +398,24 @@ class ARLDM(pl.LightningModule):
             seen_mask = ~unseen_flag.flatten() # seen mask, flags sample True if seen
             if seen_mask.any():
                 distillation_loss = distillation_loss[seen_mask].mean() # no distillation if all samples are unseen
-                loss = loss.mean() + self.args.distillation_weight * distillation_loss
-            else:
-                loss = loss.mean()
+                loss = loss + self.args.distillation_weight * distillation_loss
         return loss
+
+    @staticmethod
+    def nt_xent_loss(positive_noise_pred, negative_noise_pred, temperature=0.3):
+        positive_flat = positive_noise_pred.view(positive_noise_pred.shape[0], -1)
+        negative_flat = negative_noise_pred.view(negative_noise_pred.shape[0], -1)
+
+        positive_norm = positive_flat / torch.norm(positive_flat, dim=-1, keepdim=True)
+        negative_norm = negative_flat / torch.norm(negative_flat, dim=-1, keepdim=True)
+        similarities = torch.matmul(positive_norm, negative_norm.T)
+
+        exp_similarities = torch.exp(similarities / temperature)
+        sum_exp_similarities = torch.sum(exp_similarities, dim=1, keepdim=True)
+        nt_xent_loss = -torch.log(1 / sum_exp_similarities)
+        nt_xent_loss = torch.mean(nt_xent_loss)
+
+        return nt_xent_loss
 
     def sample(self, batch):
         original_images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, unseen_flag = batch

@@ -164,9 +164,68 @@ class StoryDataset(Dataset):
             transforms.Normalize([0.48145466, 0.4578275, 0.40821073], [0.26862954, 0.26130258, 0.27577711])
         ])
 
+    def get_negative_samples(self):
+        # Randomly select a train_unseen example
+        story = random.choice(self.unseen_train)
+
+        # Get the text descriptions for the current train_unseen example
+        placeholder_name = self.nominal_name_mapping[self.cur_char][0]
+        special_token = self.nominal_name_mapping[self.cur_char][1]
+        if self.cur_char not in self.unseen_with_dir:
+            negative_texts = [self.descriptions[i] for i in story]
+            negative_texts = [text.lower() for text in negative_texts]
+            negative_texts = [text.replace(self.cur_char, special_token) for text in negative_texts]
+        else:
+            negative_texts = []
+            for id in story:
+                try:
+                    anno = self.cur_char_anno[id]
+                    anno = anno.replace(placeholder_name, special_token)
+                    negative_texts.append(anno)
+                except KeyError:
+                    negative_texts.append(self.descriptions[id])
+
+        available_chars = [char for char in self.args.get(self.dataset).new_tokens if char.lower() not in ' '.join(negative_texts).lower()]
+
+        known_char = random.choice(available_chars)
+
+        # Replace the new character in the text with the known character
+        negative_texts = [text.replace(special_token, known_char) for text in negative_texts]
+
+        return negative_texts
+
+    def get_positive_samples(self):
+        while True:
+            # Randomly select a train_seen example
+            random_index = random.choice(list(range(self.seen_len['train'])))
+
+            # Get the texts for the selected example
+            positive_texts = self.h5file["train"]['text'][random_index].decode('utf-8').split('|')
+
+            # Identify seen characters in the text descriptions
+            seen_chars = []
+            for char in self.args.get(self.dataset).new_tokens:
+                if any(char.lower() in text.lower() for text in positive_texts):
+                    seen_chars.append(char)
+
+            # If more than 2 seen characters are found, try again with a different example
+            if len(seen_chars) > 2:
+                continue
+
+            # randomly select the seen character to replace
+            prev_char = random.choice(seen_chars)
+
+            # Replace seen characters in the text with the current new character
+            special_token = self.nominal_name_mapping[self.cur_char][1]
+            positive_texts = [text.lower().replace(prev_char.lower(), special_token) for text in positive_texts]
+
+            return positive_texts
+
     def __getitem__(self, index):
         if self.subset == 'train':
-            # check if index within len of seen_train_indexes
+            pos = self.get_positive_samples()
+            neg = self.get_negative_samples()
+
             if index < len(self.seen_train_indexes):
                 # reading from h5, convert index
                 index = self.seen_train_indexes[index]
@@ -287,7 +346,26 @@ class StoryDataset(Dataset):
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
 
-        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, unseen_flags
+        # Get positive and negative samples
+        positive_texts = self.get_positive_samples()
+        negative_texts = self.get_negative_samples()
+
+        # Concatenate positive and negative samples
+        contrastive_texts = [positive_texts] + [negative_texts]
+        contrastive_texts = [item for sublist in contrastive_texts for item in sublist]
+
+        # Tokenize contrastive texts
+        contrastive_tokenized = self.clip_tokenizer(
+            contrastive_texts,
+            padding="max_length",
+            max_length=self.max_length,
+            truncation=False,
+            return_tensors="pt",
+        )
+        contrastive_captions, contrastive_attention_mask = contrastive_tokenized['input_ids'], contrastive_tokenized[
+            'attention_mask']
+
+        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, unseen_flags, contrastive_captions, contrastive_attention_mask
 
     def __len__(self):
         seen_train_len = len(self.seen_train_indexes)
@@ -358,7 +436,7 @@ class CustomStory(StoryDataset):
 def test_case(args):
     pl.seed_everything(args.seed)
 
-    story_dataset = StoryDataset('test_unseen', args=args)
+    story_dataset = StoryDataset('train', args=args)
     story_dataloader = DataLoader(story_dataset, batch_size=1, shuffle=False, num_workers=0)
 
     for batch in tqdm(story_dataloader):

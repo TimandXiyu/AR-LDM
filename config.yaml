@@ -1,19 +1,20 @@
 # device
 mode: train_unseen
 gpu_ids: [2,3]  # gpu ids
-batch_size: 1 # each item denotes one story
+batch_size: 2 # each item denotes one story
 num_workers: 8 # number of workers
 num_cpu_cores: -1  # number of cpu cores
 grad_accumulation_steps: 1 # gradient accumulation steps
 seed: 0  # random seed
 ckpt_dir: ./ckpts # checkpoint directory
-run_name: flintstones_us10_more_ref # name for this run
+run_name: flintstones_us10_contrast_ver1 # name for this run
 cur_char: # cache current character
 history_char: # cache history character, don't fill this field
 char_tokens: # cache unseen character tokens
 inject_lora: False # whether to inject lora
-distillation: True # whether to use distillation
+distillation: False # whether to use distillation
 distillation_weight: 1.0 # distillation weight
+contrastive: True # whether to use contrastive learning
 
 # task
 dataset: flintstones_unseen # pororo flintstones vistsis vistdii | flintstones_unseen
@@ -24,9 +25,9 @@ init_lr: 1e-5
 warmup_epochs: 5  # warmup epochs
 max_epochs: 100 # max epochs
 train_model_file:  # model file for resume, none for train from scratch
-freeze_clip: False  # whether to freeze clip
-freeze_blip: False  # whether to freeze blip
-freeze_resnet: False  # whether to freeze resnet
+freeze_clip: True  # whether to freeze clip
+freeze_blip: True  # whether to freeze blip
+freeze_resnet: True  # whether to freeze resnet
 save_freq: 100  # save frequency
 
 # sample
