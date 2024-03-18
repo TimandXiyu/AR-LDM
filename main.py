@@ -28,6 +28,7 @@ from models.inception import InceptionV3
 from lora_diffusion import inject_trainable_lora
 import itertools
 import json
+from einops import rearrange
 
 
 class LightningDataset(pl.LightningDataModule):
@@ -280,7 +281,8 @@ class ARLDM(pl.LightningModule):
             self.text_encoder.eval()
         if self.args.freeze_blip and hasattr(self, "mm_encoder"):
             self.mm_encoder.eval()
-        images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, unseen_flag, contrastive_caption, contrastive_mask = batch
+        images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
+         unseen_flag, contrastive_caption, contrastive_mask = batch
         """
         images: [B, V, 3, H, W]
         captions: [B, V, S]
@@ -383,11 +385,10 @@ class ARLDM(pl.LightningModule):
             positive_noise_pred = self.unet(noisy_latents, timesteps, positive_embeddings, positive_mask).sample
             negative_noise_pred = self.unet(noisy_latents, timesteps, negative_embeddings, negative_mask).sample
 
-            # Compute the NT-Xent loss
-            contrastive_loss = self.nt_xent_loss(positive_noise_pred, negative_noise_pred, temperature=0.07)
+            c_loss = self.contrastive_loss(positive_noise_pred, negative_noise_pred)
 
-            # Add the contrastive loss to the total loss
-            loss = loss + self.args.contrastive_weight * contrastive_loss
+            loss = loss + self.args.contrastive_weight * c_loss
+
 
         if self.args.distillation and self.teacher_model is not None:
             with torch.no_grad():
@@ -401,24 +402,21 @@ class ARLDM(pl.LightningModule):
                 loss = loss + self.args.distillation_weight * distillation_loss
         return loss
 
-    @staticmethod
-    def nt_xent_loss(positive_noise_pred, negative_noise_pred, temperature=0.3):
-        positive_flat = positive_noise_pred.view(positive_noise_pred.shape[0], -1)
-        negative_flat = negative_noise_pred.view(negative_noise_pred.shape[0], -1)
+    def contrastive_loss(self, positive_noise_pred, negative_noise_pred):
 
-        positive_norm = positive_flat / torch.norm(positive_flat, dim=-1, keepdim=True)
-        negative_norm = negative_flat / torch.norm(negative_flat, dim=-1, keepdim=True)
-        similarities = torch.matmul(positive_norm, negative_norm.T)
+        positive_noise_pred = rearrange(positive_noise_pred, '(b n) c h w -> b n c h w', n=5)
+        negative_noise_pred = rearrange(negative_noise_pred, '(b n) c h w -> b n c h w', n=5)
+        cosine_sim = F.cosine_similarity(positive_noise_pred, negative_noise_pred, dim=2)
+        mean_cosine_sim = cosine_sim.mean(dim=1)
+        cosine_distance = 1 - mean_cosine_sim
+        mask = cosine_distance < 0.1
+        cosine_distance_loss = -(cosine_distance * mask).mean()
+        return cosine_distance_loss
 
-        exp_similarities = torch.exp(similarities / temperature)
-        sum_exp_similarities = torch.sum(exp_similarities, dim=1, keepdim=True)
-        nt_xent_loss = -torch.log(1 / sum_exp_similarities)
-        nt_xent_loss = torch.mean(nt_xent_loss)
-
-        return nt_xent_loss
 
     def sample(self, batch):
-        original_images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, unseen_flag = batch
+        original_images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
+            unseen_flag, _, _ = batch
         B, V, S = captions.shape
         src_V = V + 1 if self.task == 'continuation' else V
         original_images = torch.flatten(original_images, 0, 1)
@@ -739,6 +737,10 @@ def train_unseen(args: DictConfig) -> None:
         )
         # adding a new item to the config
         args['cur_char'] = cur_char
+        if args['history_char'] is None:
+            args['history_char'] = []
+        else:
+            args['history_char'].append(cur_char)
         dataloader = LightningDataset(args)
         dataloader.setup('train')
 
@@ -756,7 +758,7 @@ def test_unseen(args: DictConfig) -> None:
         args['cur_char'] = cur_char
         for j in range(k + 1):
             args['history_char'].append(target_chars[j])
-        test_model_file = args.test_model_file.replace('.ckpt', '-' + str(cur_char) + '.ckpt')
+        test_model_file = args.test_model_file + f"epoch=99-{cur_char}.ckpt"
         model = ARLDM.load_from_checkpoint(test_model_file, args=args, strict=False)
 
         predictor = pl.Trainer(
@@ -825,9 +827,13 @@ def test_unseen(args: DictConfig) -> None:
                         json.dump(story, f, indent=4)
 
 def test_seen(args: DictConfig) -> None:
-    dataloader = LightningDataset(args)
-    dataloader.setup('test_seen')
-    model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
+    target_chars = args.get(args.dataset).target_chars
+    last_name = target_chars[-1]
+
+    args['history_char'] = target_chars
+    args['cur_char'] = last_name
+    test_model_file = os.path.join(args.test_model_file, f"epoch=99-{last_name}.ckpt")
+    model = ARLDM.load_from_checkpoint(test_model_file, args=args, strict=False)
 
     predictor = pl.Trainer(
         accelerator='gpu',
@@ -837,42 +843,57 @@ def test_seen(args: DictConfig) -> None:
         strategy=DDPStrategy(find_unused_parameters=False),
         precision=16
     )
-    predictions = predictor.predict(model, dataloader)
-    if args.calculate_fid:
-        ori = np.array([elem for sublist in predictions for elem in sublist[1]])
-        gen = np.array([elem for sublist in predictions for elem in sublist[2]])
-        fid = calculate_fid_given_features(ori, gen)
-        print('FID: {}'.format(fid))
 
+    dataloader = LightningDataset(args)
+    dataloader.setup('test_seen')
+
+    predictions = predictor.predict(model, dataloader)
     generated_images = [elem for sublist in predictions for elem in sublist[0]]
     original_images = [elem for sublist in predictions for elem in sublist[3]]
     texts = [elem for sublist in predictions for elem in sublist[4]]
-
-    if not os.path.exists(args.sample_output_dir):
-        os.makedirs(args.sample_output_dir, exist_ok=True)
+    indexes = [elem for sublist in predictions for elem in sublist[5]]
+    indexes = [int(i) for i in indexes]
+    unseen_flags = [elem for sublist in predictions for elem in sublist[6]]
 
     if args.sample_output_dir is not None:
-        for i, image in enumerate(generated_images):
-            character_output_dir = os.path.join(args.sample_output_dir, 'seen_characters')
+        os.makedirs(args.sample_output_dir, exist_ok=True)
+        checkpoint_output_dir = args.sample_output_dir
+
+        for i, story in enumerate(generated_images):
+            character_output_dir = os.path.join(checkpoint_output_dir, args['cur_char'])
             if not os.path.exists(character_output_dir):
                 os.makedirs(character_output_dir)
-            img_folder_name = os.path.join(character_output_dir, f'{i // 5:04d}')
+            img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
             if not os.path.exists(img_folder_name):
                 os.makedirs(img_folder_name, exist_ok=True)
-            image_path = os.path.join(img_folder_name, f'{i % 5:04d}_generated.png')
-            image.save(image_path)
+            for j, image in enumerate(story):
+                if unseen_flags[i][j]:
+                    image_path = os.path.join(img_folder_name, f'{j}_generated_eval.png')
+                else:
+                    image_path = os.path.join(img_folder_name, f'{j}_generated.png')
+                image.save(image_path)
 
-        for i, image in enumerate(original_images):
-            character_output_dir = os.path.join(args.sample_output_dir, 'seen_characters')
-            img_folder_name = os.path.join(character_output_dir, f'{i // 5:04d}')
-            image_path = os.path.join(img_folder_name, f'{i % 5:04d}_original.png')
-            image.save(image_path)
+        original_images = [original_images[i:i + 5] for i in range(0, len(original_images), 5)] \
+            if args.task == 'visualization' else [original_images[i:i + 4] for i in
+                                                  range(0, len(original_images), 4)]
+        for i, story in enumerate(original_images):
+            character_output_dir = os.path.join(checkpoint_output_dir, args['cur_char'])
+            img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
+            if not os.path.exists(img_folder_name):
+                os.makedirs(img_folder_name, exist_ok=True)
+            for j, image in enumerate(story):
+                if unseen_flags[i][j]:
+                    image_path = os.path.join(img_folder_name, f'{j}_original_eval.png')
+                else:
+                    image_path = os.path.join(img_folder_name, f'{j}_original.png')
+                image.save(image_path)
 
-        # write texts into one json
-        character_output_dir = os.path.join(args.sample_output_dir, 'seen_characters')
-        text_path = os.path.join(character_output_dir, 'texts.json')
-        with open(text_path, 'w') as f:
-            json.dump(texts, f, indent=4)
+        for i, story in enumerate(texts):
+            character_output_dir = os.path.join(checkpoint_output_dir, args['cur_char'])
+            img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
+            text_path = os.path.join(img_folder_name, 'texts.json')
+            with open(text_path, 'w') as f:
+                json.dump(story, f, indent=4)
 
 def custom_unseen(args: DictConfig) -> None:
     dataloader = LightningDataset(args)
@@ -907,7 +928,7 @@ def custom_unseen(args: DictConfig) -> None:
                 image.save(image_path)
 
 
-@hydra.main(config_path=".", config_name="config")
+@hydra.main(config_path=".", config_name="config-test")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)

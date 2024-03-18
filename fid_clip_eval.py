@@ -20,10 +20,39 @@ from numpy import dot
 from numpy.linalg import norm
 import csv
 import pandas as pd
+from tqdm import tqdm
+
+
+def get_metrics_singdir(args: DictConfig) -> None:
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_more_ref_seen/texarock_1/"
+
+    evaluator = Evaluation(args)
+
+    original_inception_features = []
+    generated_inception_features = []
+
+    for img_dir in tqdm(os.listdir(data_dir)):
+        img_dir = os.path.join(data_dir, img_dir)
+        for img in os.listdir(img_dir):
+            if img.endswith("_original.png"):
+                original_inception_features.extend(evaluator.get_inception_feature([os.path.join(img_dir, img)]))
+            elif img.endswith("_generated.png"):
+                generated_inception_features.extend(evaluator.get_inception_feature([os.path.join(img_dir, img)]))
+
+    if original_inception_features and generated_inception_features:
+        original_inception_features = np.vstack(original_inception_features)
+        generated_inception_features = np.vstack(generated_inception_features)
+        fid = calculate_fid_given_features(original_inception_features, generated_inception_features)
+        print(f"FID for the folder: {fid}")
+    else:
+        print("No images found in the folder.")
+
+
+# Rest of the code remains the same
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_distill_1.5/"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us3_simple_contrast/"
 
     evaluator = Evaluation(args)
     fid_scores = []
@@ -125,7 +154,7 @@ def main(args: DictConfig) -> None:
         torch.set_num_threads(args.num_cpu_cores)
 
     get_metrics(args)
-
+    # get_metrics_singdir(args)
 
 if __name__ == '__main__':
     main()

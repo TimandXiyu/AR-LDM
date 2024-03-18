@@ -41,6 +41,8 @@ class StoryDataset(Dataset):
         self.target_dir = args.get(args.dataset).target_dir
         self.data_dir = args.get(args.dataset).data_dir
 
+        self.random_seeds = list(range(100))
+
         splits = json.load(open(os.path.join(self.data_dir, 'train-val-test_split.json'), 'r'))
         self.train_ids, self.val_ids, self.test_ids = splits["train"], splits["val"], splits["test"]
         self.followings = pickle.load(open(os.path.join(self.data_dir, 'following_cache4.pkl'), 'rb'))
@@ -52,10 +54,17 @@ class StoryDataset(Dataset):
         self.new_followings = json.load(open(os.path.join(self.data_dir, 'new_followings.json'), 'r'))
         self.seen_len = {"train": len(self.h5file['train']['text']), "test": len(self.h5file['test']['text'])}
         # get 10% random samples from train and test split of the h5 file
-        self.rand = Random()
-        self.rand.seed(time.time())
-        self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 25)
-        self.seen_test_indexes = self.rand.sample(range(self.seen_len["test"]), 400)
+        if self.subset == "train":
+            seed = self.random_seeds[len(self.args.history_char)]
+            self.rand = Random()
+            self.rand.seed(seed)
+            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 50)
+            self.seen_test_indexes = list(range(self.seen_len["test"]))
+        else:
+            self.rand = Random()
+            self.rand.seed(0)
+            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 50)
+            self.seen_test_indexes = list(range(self.seen_len["test"]))
 
         self.unseen_char = dict()
 
@@ -209,7 +218,7 @@ class StoryDataset(Dataset):
                     seen_chars.append(char)
 
             # If more than 2 seen characters are found, try again with a different example
-            if len(seen_chars) > 2:
+            if len(seen_chars) > 2 or len(seen_chars) == 0:
                 continue
 
             # randomly select the seen character to replace
@@ -276,7 +285,7 @@ class StoryDataset(Dataset):
             index = self.seen_test_indexes[index]
             images = list()
             for i in range(5):
-                im = self.h5file["train"]['image{}'.format(i)][index]
+                im = self.h5file["test"]['image{}'.format(i)][index]
                 im = cv2.imdecode(im, cv2.IMREAD_COLOR)
                 idx = random.randint(0, 4)
                 images.append(im[idx * 128: (idx + 1) * 128])
@@ -366,6 +375,8 @@ class StoryDataset(Dataset):
             'attention_mask']
 
         return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, unseen_flags, contrastive_captions, contrastive_attention_mask
+
+
 
     def __len__(self):
         seen_train_len = len(self.seen_train_indexes)
