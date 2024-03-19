@@ -1,27 +1,26 @@
 #!/bin/bash
 
-# Array of test model file paths and corresponding output directories
-test_model_files=(
-    "/home/xiyu/projects/AR-LDM/ckpts/flintstones_train_10_unseen_256_distill/ 25"
-    "/home/xiyu/projects/AR-LDM/ckpts/flintstones_us10_more_ref/ 25"
-    "/home/xiyu/projects/AR-LDM/ckpts/flintstones_us10_no_ref/ 67"
-    "/home/xiyu/projects/AR-LDM/ckpts/flintstones_us10_simple_distill/ 26"
+run_name=(
+    "flintstones_contrast_weight_0.1"
+    "flintstones_contrast_weight_0.5"
+    "flintstones_contrast_weight_1.0"
+    "flintstones_contrast_weight_1.5"
+    "flintstones_contrast_weight_2.0"
 )
-
-output_directories=(
-    "./ckpts/output_images_train_10_unseen_256_distill_seen"
-    "./ckpts/output_images_us10_more_ref_seen"
-    "./ckpts/output_images_us10_no_ref_seen"
-    "./ckpts/output_images_us10_simple_distill_seen"
+contrast_weight=(
+    0.1
+    0.5
+    1.0
+    1.5
+    2.0
 )
 
 # Loop through each test model file path and corresponding output directory
-for i in "${!test_model_files[@]}"
+for i in "${!run_name[@]}"
 do
-    test_model_file="${test_model_files[i]}"
-    output_dir="${output_directories[i]}"
-
-    echo "Running evaluation for: $test_model_file"
-    echo "Output directory: $output_dir"
-    python main.py test_model_file="$test_model_file" sample_output_dir="$output_dir"
+    name="${run_name[i]}"
+    w="${contrast_weight[i]}"
+    echo "run_name=$name"
+    echo "contrastive_weight=$w"
+    python main.py "run_name=$name" "contrastive_weight=$w"
 done

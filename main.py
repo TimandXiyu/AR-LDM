@@ -2,6 +2,7 @@ import inspect
 import os
 from typing import Dict, Any
 
+import einops
 import hydra
 import numpy as np
 from tqdm import tqdm
@@ -72,7 +73,9 @@ class LightningDataset(pl.LightningDataModule):
 
     def train_dataloader(self):
         if not hasattr(self, 'trainloader'):
-            self.trainloader = DataLoader(self.train_data, batch_size=self.args.batch_size, shuffle=True, **self.kwargs)
+            self.trainloader = DataLoader(self.train_data, batch_size=self.args.batch_size, shuffle=True,
+                                          drop_last=True,
+                                          **self.kwargs)
         return self.trainloader
 
     def val_dataloader(self):
@@ -282,7 +285,7 @@ class ARLDM(pl.LightningModule):
         if self.args.freeze_blip and hasattr(self, "mm_encoder"):
             self.mm_encoder.eval()
         images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
-         unseen_flag, contrastive_caption, contrastive_mask = batch
+         unseen_flag, contrastive_caption, contrastive_mask, unseen_text_img_pairs = batch
         """
         images: [B, V, 3, H, W]
         captions: [B, V, S]
@@ -310,6 +313,24 @@ class ARLDM(pl.LightningModule):
             negative_caption = torch.flatten(negative_caption, 0, 1)
             positive_mask = torch.flatten(positive_mask, 0, 1)
             negative_mask = torch.flatten(negative_mask, 0, 1)
+        unseen_images, unseen_source_images, unseen_captions, unseen_source_caption, unseen_attention_mask, \
+            unseen_source_attention_mask = unseen_text_img_pairs
+        unseen_images = einops.rearrange(unseen_images, 'b v c h w -> (b v) c h w').chunk(2, dim=0)[0]
+        unseen_source_images = einops.rearrange(unseen_source_images, 'b v c h w -> (b v) c h w').chunk(2, dim=0)[0]
+        unseen_captions = einops.rearrange(unseen_captions, 'b v s -> (b v) s').chunk(2, dim=0)[0]
+        unseen_source_caption = einops.rearrange(unseen_source_caption, 'b v s -> (b v) s').chunk(2, dim=0)[0]
+        unseen_attention_mask = einops.rearrange(unseen_attention_mask, 'b v s -> (b v) s').chunk(2, dim=0)[0]
+        unseen_source_attention_mask = einops.rearrange(unseen_source_attention_mask, 'b v s -> (b v) s').chunk(2, dim=0)[0]
+
+        # fuse unseen pairs with the original pairs
+        images = torch.cat([images, unseen_images], dim=0)
+        source_images = torch.cat([source_images, unseen_source_images], dim=0)
+        captions = torch.cat([captions, unseen_captions], dim=0)
+        attention_mask = torch.cat([attention_mask, unseen_attention_mask], dim=0)
+        source_caption = torch.cat([source_caption, unseen_source_caption], dim=0)
+        source_attention_mask = torch.cat([source_attention_mask, unseen_source_attention_mask], dim=0)
+        _B = B
+        B += 1
 
         classifier_free_idx = np.random.rand(B * V) < 0.1
 
@@ -332,6 +353,7 @@ class ARLDM(pl.LightningModule):
         attention_mask = torch.cat(
             [attention_mask, source_attention_mask.reshape(B, src_V * S).repeat_interleave(V, dim=0)], dim=1)
         attention_mask = ~(attention_mask.bool())  # B * V, (src_V + 1) * S
+        _attention_mask = attention_mask.detach().cpu().numpy()
         attention_mask[classifier_free_idx] = False
 
         if self.args.contrastive:
@@ -340,29 +362,26 @@ class ARLDM(pl.LightningModule):
             negative_caption_embeddings = self.text_encoder(negative_caption, negative_mask).last_hidden_state
             positive_caption_embeddings += self.modal_type_embeddings(torch.tensor(0, device=self.device))
             negative_caption_embeddings += self.modal_type_embeddings(torch.tensor(0, device=self.device))
-            _tmp1 = positive_mask.cpu().detach().numpy()
             positive_mask = torch.cat(
-                [positive_mask, torch.zeros((B * V, src_V * S), device=self.device).bool()],
+                [positive_mask, torch.zeros((_B * V, src_V * S), device=self.device).bool()],
                 dim=1
             )
-            _tmp2 = positive_mask.cpu().detach().numpy()
             positive_mask = ~(positive_mask.bool())
-            _tmp3 = positive_mask.cpu().detach().numpy()
             positive_embeddings = torch.cat(
                 [positive_caption_embeddings,
                  torch.zeros(
-                (B * V, src_V * S, positive_caption_embeddings.shape[-1]), device=self.device)],
+                (_B * V, src_V * S, positive_caption_embeddings.shape[-1]), device=self.device)],
                 dim=1)
 
             negative_mask = torch.cat(
-                [negative_mask, torch.zeros((B * V, src_V * S), device=self.device).bool()],
+                [negative_mask, torch.zeros((_B * V, src_V * S), device=self.device).bool()],
                 dim=1
             )
             negative_mask = ~(negative_mask.bool())
             negative_embeddings = torch.cat(
                 [negative_caption_embeddings,
                  torch.zeros(
-                     (B * V, src_V * S, negative_caption_embeddings.shape[-1]), device=self.device)],
+                     (_B * V, src_V * S, negative_caption_embeddings.shape[-1]), device=self.device)],
                 dim=1)
 
         # B, V, V, S
@@ -382,12 +401,27 @@ class ARLDM(pl.LightningModule):
         loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
 
         if self.args.contrastive:
-            positive_noise_pred = self.unet(noisy_latents, timesteps, positive_embeddings, positive_mask).sample
-            negative_noise_pred = self.unet(noisy_latents, timesteps, negative_embeddings, negative_mask).sample
+            noisy_latents_seen = torch.stack(noisy_latents.chunk(B)[:-1], 0)
+            noisy_latents_unseen = noisy_latents.chunk(B)[-1]
+            noisy_latents_seen = einops.rearrange(noisy_latents_seen, 'b v c h w -> (b v) c h w')
+            repeat_time = noisy_latents_seen.shape[0] // V
+            noisy_latents_unseen = einops.repeat(noisy_latents_unseen, 'b c h w -> (b n) c h w', n=repeat_time)
+            timestep_seen = timesteps[:_B * V]
+            timestep_unseen = timesteps[_B * V:]
+            timestep_unseen = timestep_unseen.repeat(repeat_time)
+            # noisy latents are seen + unseen (batch_size * 5 + 5 more unseen images)
+            positive_noise_pred = self.unet(noisy_latents_seen, timestep_seen, positive_embeddings, positive_mask).sample
+            # negative_noise_pred = self.unet(noisy_latents_unseen, timestep_unseen, negative_embeddings, negative_mask).sample
 
-            c_loss = self.contrastive_loss(positive_noise_pred, negative_noise_pred)
+            unseen_noise_pred = einops.repeat(noise_pred[_B * V:], 'b c h w -> (b n) c h w', n=repeat_time)
 
-            loss = loss + self.args.contrastive_weight * c_loss
+            anchor_positive_distance = F.mse_loss(unseen_noise_pred, positive_noise_pred, reduction="none").mean([1, 2, 3])
+            # anchor_negative_distance = F.mse_loss(unseen_noise_pred, negative_noise_pred, reduction="none").mean([1, 2, 3])
+
+            margin = 1.0  # Set the desired margin
+            triplet_loss = torch.clamp(anchor_positive_distance, min=0, max=1.0).mean()
+
+            loss = loss + self.args.contrastive_weight * triplet_loss
 
 
         if self.args.distillation and self.teacher_model is not None:
@@ -416,7 +450,7 @@ class ARLDM(pl.LightningModule):
 
     def sample(self, batch):
         original_images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
-            unseen_flag, _, _ = batch
+            unseen_flag, _, _, _ = batch
         B, V, S = captions.shape
         src_V = V + 1 if self.task == 'continuation' else V
         original_images = torch.flatten(original_images, 0, 1)
@@ -928,7 +962,7 @@ def custom_unseen(args: DictConfig) -> None:
                 image.save(image_path)
 
 
-@hydra.main(config_path=".", config_name="config-test")
+@hydra.main(config_path=".", config_name="config")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)

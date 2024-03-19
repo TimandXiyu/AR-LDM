@@ -2,12 +2,12 @@
 mode: train_unseen
 gpu_ids: [0,1,2,3]  # gpu ids
 batch_size: 2 # each item denotes one story
-num_workers: 8 # number of workers
+num_workers: 16 # number of workers
 num_cpu_cores: -1  # number of cpu cores
-grad_accumulation_steps: 1 # gradient accumulation steps
+grad_accumulation_steps: 2 # gradient accumulation steps
 seed: 0  # random seed
 ckpt_dir: ./ckpts # checkpoint directory
-run_name: flintstones_us3_contrast_simple_cosine_weight=0.1 # name for this run
+run_name: flintstones_us10_persistent_pos_only_confirm # name for this run
 cur_char: # cache current character
 history_char: # cache history character, don't fill this field
 char_tokens: # cache unseen character tokens
@@ -15,7 +15,7 @@ inject_lora: False # whether to inject lora
 distillation: False # whether to use distillation
 distillation_weight: 1.0 # distillation weight
 contrastive: True # whether to use contrastive learning
-contrastive_weight: 0.1 # contrastive weight
+contrastive_weight: 0.25 # contrastive weight
 
 # task
 dataset: flintstones_unseen # pororo flintstones vistsis vistdii | flintstones_unseen

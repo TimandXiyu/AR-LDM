@@ -58,12 +58,12 @@ class StoryDataset(Dataset):
             seed = self.random_seeds[len(self.args.history_char)]
             self.rand = Random()
             self.rand.seed(seed)
-            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 50)
+            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 40)
             self.seen_test_indexes = list(range(self.seen_len["test"]))
         else:
             self.rand = Random()
             self.rand.seed(0)
-            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 50)
+            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 40)
             self.seen_test_indexes = list(range(self.seen_len["test"]))
 
         self.unseen_char = dict()
@@ -173,9 +173,12 @@ class StoryDataset(Dataset):
             transforms.Normalize([0.48145466, 0.4578275, 0.40821073], [0.26862954, 0.26130258, 0.27577711])
         ])
 
-    def get_negative_samples(self):
+    def get_negative_samples(self, story=None):
         # Randomly select a train_unseen example
-        story = random.choice(self.unseen_train)
+        if story is None:
+            story = random.choice(self.unseen_train)
+        else:
+            story = story
 
         # Get the text descriptions for the current train_unseen example
         placeholder_name = self.nominal_name_mapping[self.cur_char][0]
@@ -203,23 +206,25 @@ class StoryDataset(Dataset):
 
         return negative_texts
 
-    def get_positive_samples(self):
+    def get_positive_samples(self, texts=None):
         while True:
-            # Randomly select a train_seen example
-            random_index = random.choice(list(range(self.seen_len['train'])))
-
-            # Get the texts for the selected example
-            positive_texts = self.h5file["train"]['text'][random_index].decode('utf-8').split('|')
-
+            positive_texts = texts
             # Identify seen characters in the text descriptions
             seen_chars = []
             for char in self.args.get(self.dataset).new_tokens:
                 if any(char.lower() in text.lower() for text in positive_texts):
                     seen_chars.append(char)
 
-            # If more than 2 seen characters are found, try again with a different example
-            if len(seen_chars) > 2 or len(seen_chars) == 0:
-                continue
+            # If no seen characters are found, randomly select a train example
+            if len(seen_chars) == 0:
+                while True:
+                    random_index = random.choice(list(range(self.seen_len['train'])))
+                    positive_texts = self.h5file["train"]['text'][random_index].decode('utf-8').split('|')
+                    for char in self.args.get(self.dataset).new_tokens:
+                        if any(char.lower() in text.lower() for text in positive_texts):
+                            seen_chars.append(char)
+                    if len(seen_chars) > 0:
+                        break
 
             # randomly select the seen character to replace
             prev_char = random.choice(seen_chars)
@@ -232,54 +237,49 @@ class StoryDataset(Dataset):
 
     def __getitem__(self, index):
         if self.subset == 'train':
-            pos = self.get_positive_samples()
-            neg = self.get_negative_samples()
+            # load the seen characters
+            index = self.seen_train_indexes[index]
+            images = list()
+            for i in range(5):
+                im = self.h5file["train"]['image{}'.format(i)][index]
+                im = cv2.imdecode(im, cv2.IMREAD_COLOR)
+                idx = random.randint(0, 4)
+                images.append(im[idx * 128: (idx + 1) * 128])
+            texts = self.h5file["train"]['text'][index].decode('utf-8').split('|')
+            # load the unseen characters
+            unseen_story = self.unseen_train[random.randint(0, len(self.unseen_train) - 1)]
+            unseen_images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in unseen_story]
+            unseen_images = [np.load(img) for img in unseen_images]
+            unseen_images = [img[np.random.randint(0, img.shape[0])] for img in unseen_images]
 
-            if index < len(self.seen_train_indexes):
-                # reading from h5, convert index
-                index = self.seen_train_indexes[index]
-                images = list()
-                for i in range(5):
-                    im = self.h5file["train"]['image{}'.format(i)][index]
-                    im = cv2.imdecode(im, cv2.IMREAD_COLOR)
-                    idx = random.randint(0, 4)
-                    images.append(im[idx * 128: (idx + 1) * 128])
-                texts = self.h5file["train"]['text'][index].decode('utf-8').split('|')
-                unseen_flags = [False] * 5
-            else:
-                story = self.unseen_train[index - len(self.seen_train_indexes)]
-                images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in story]
-                images = [np.load(img) for img in images]
-                images = [img[np.random.randint(0, img.shape[0])] for img in images]
-
-                # Generate flags for frames corresponding to the unseen character
-                unseen_flags = []
-                for id in story:
-                    if self.cur_char not in self.unseen_with_dir:
-                        if self.cur_char in self.descriptions[id].lower() or self.cur_char in [char.lower() for char in
-                                                                                               self.annotations[id][
-                                                                                                   'characters']]:
-                            unseen_flags.append(True)
-                        else:
-                            unseen_flags.append(False)
-                    else:
-                        unseen_flags.append(id in self.cur_char_anno)
-
-                placeholder_name = self.nominal_name_mapping[self.cur_char][0]
-                special_token = self.nominal_name_mapping[self.cur_char][1]
+            # Generate flags for frames corresponding to the unseen character
+            unseen_flags = []
+            for id in unseen_story:
                 if self.cur_char not in self.unseen_with_dir:
-                    texts = [self.descriptions[i] for i in story]
-                    texts = [text.lower() for text in texts]
-                    texts = [text.replace(self.cur_char, special_token) for text in texts]
+                    if self.cur_char in self.descriptions[id].lower() or self.cur_char in [char.lower() for char in
+                                                                                           self.annotations[id][
+                                                                                               'characters']]:
+                        unseen_flags.append(True)
+                    else:
+                        unseen_flags.append(False)
                 else:
-                    texts = []
-                    for id in story:
-                        try:
-                            anno = self.cur_char_anno[id]
-                            anno = anno.replace(placeholder_name, special_token)
-                            texts.append(anno)
-                        except KeyError:
-                            texts.append(self.descriptions[id])
+                    unseen_flags.append(id in self.cur_char_anno)
+
+            placeholder_name = self.nominal_name_mapping[self.cur_char][0]
+            special_token = self.nominal_name_mapping[self.cur_char][1]
+            if self.cur_char not in self.unseen_with_dir:
+                unseen_texts = [self.descriptions[i] for i in unseen_story]
+                unseen_texts = [text.lower() for text in unseen_texts]
+                unseen_texts = [text.replace(self.cur_char, special_token) for text in unseen_texts]
+            else:
+                unseen_texts = []
+                for id in unseen_story:
+                    try:
+                        anno = self.cur_char_anno[id]
+                        anno = anno.replace(placeholder_name, special_token)
+                        unseen_texts.append(anno)
+                    except KeyError:
+                        unseen_texts.append(self.descriptions[id])
 
         elif self.subset == 'test_seen':
             index = self.seen_test_indexes[index]
@@ -336,7 +336,43 @@ class StoryDataset(Dataset):
         images = torch.stack([self.augment(im) for im in images]) \
             if self.subset in ['train', 'val','train_unseen'] else torch.from_numpy(np.array(images))
 
-        # tokenize caption using default tokenizer
+        if self.subset == 'train':
+            unseen_source_images = torch.stack([self.blip_image_processor(im) for im in unseen_images])
+            unseen_images = unseen_images[1:] if self.args.task == 'continuation' else unseen_images
+            unseen_images = torch.stack([self.augment(im) for im in unseen_images]) \
+                if self.subset in ['train', 'val','train_unseen'] else torch.from_numpy(np.array(unseen_images))
+            tokenized = self.clip_tokenizer(
+                unseen_texts[1:] if self.args.task == 'continuation' else unseen_texts,
+                padding="max_length",
+                max_length=self.max_length,
+                truncation=False,
+                return_tensors="pt",
+            )
+            unseen_captions, unseen_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
+            tokenized = self.blip_tokenizer(
+                unseen_texts,
+                padding="max_length",
+                max_length=self.max_length,
+                truncation=False,
+                return_tensors="pt",
+            )
+            unseen_source_caption, unseen_source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
+            unseen_text_img_pairs = (
+            unseen_images, unseen_source_images, unseen_captions, unseen_source_caption, unseen_attention_mask,
+            unseen_source_attention_mask)
+
+        else:
+            # set unseen vars to placeholder tensors
+            unseen_images = torch.zeros([5, 3, 256, 256])
+            unseen_source_images = torch.zeros([5, 3, 224, 224])
+            unseen_captions = torch.zeros([5, self.max_length])
+            unseen_source_caption = torch.zeros([5, self.max_length])
+            unseen_attention_mask = torch.zeros([5, self.max_length])
+            unseen_source_attention_mask = torch.zeros([5, self.max_length])
+            unseen_text_img_pairs = (
+                unseen_images, unseen_source_images, unseen_captions, unseen_source_caption, unseen_attention_mask,
+                unseen_source_attention_mask)
+
         tokenized = self.clip_tokenizer(
             texts[1:] if self.args.task == 'continuation' else texts,
             padding="max_length",
@@ -355,27 +391,30 @@ class StoryDataset(Dataset):
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
 
-        # Get positive and negative samples
-        positive_texts = self.get_positive_samples()
-        negative_texts = self.get_negative_samples()
+        if self.args.contrastive:
+            positive_texts = self.get_positive_samples(texts=texts)
+            negative_texts = self.get_negative_samples(story=unseen_story)
 
-        # Concatenate positive and negative samples
-        contrastive_texts = [positive_texts] + [negative_texts]
-        contrastive_texts = [item for sublist in contrastive_texts for item in sublist]
+            # Concatenate positive and negative samples
+            contrastive_texts = [positive_texts] + [negative_texts]
+            contrastive_texts = [item for sublist in contrastive_texts for item in sublist]
 
-        # Tokenize contrastive texts
-        contrastive_tokenized = self.clip_tokenizer(
-            contrastive_texts,
-            padding="max_length",
-            max_length=self.max_length,
-            truncation=False,
-            return_tensors="pt",
-        )
-        contrastive_captions, contrastive_attention_mask = contrastive_tokenized['input_ids'], contrastive_tokenized[
-            'attention_mask']
+            # Tokenize contrastive texts
+            contrastive_tokenized = self.clip_tokenizer(
+                contrastive_texts,
+                padding="max_length",
+                max_length=self.max_length,
+                truncation=False,
+                return_tensors="pt",
+            )
+            contrastive_captions, contrastive_attention_mask = contrastive_tokenized['input_ids'], contrastive_tokenized[
+                'attention_mask']
+        else:
+            contrastive_captions = torch.zeros([5, self.max_length])
+            contrastive_attention_mask = torch.zeros([5, self.max_length])
 
-        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, unseen_flags, contrastive_captions, contrastive_attention_mask
-
+        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
+            unseen_flags, contrastive_captions, contrastive_attention_mask, unseen_text_img_pairs
 
 
     def __len__(self):
@@ -384,7 +423,7 @@ class StoryDataset(Dataset):
         unseen_train_len = len(self.unseen_train)
         unseen_test_len = len(self.unseen_test)
         if self.subset == 'train':
-            return seen_train_len + unseen_train_len
+            return seen_train_len
         elif self.subset == 'test_unseen':
             if self.early_stop and unseen_test_len > self.early_stop:
                 return self.early_stop

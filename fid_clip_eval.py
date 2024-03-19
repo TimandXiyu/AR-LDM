@@ -52,7 +52,7 @@ def get_metrics_singdir(args: DictConfig) -> None:
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us3_simple_contrast/"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_persistent_pos_only_confirm"
 
     evaluator = Evaluation(args)
     fid_scores = []
@@ -146,7 +146,7 @@ class Evaluation(object):
         return pred.reshape(-1, 2048).cpu().numpy()
 
 
-@hydra.main(config_path=".", config_name="config-eval")
+@hydra.main(config_path=".", config_name="config")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)
