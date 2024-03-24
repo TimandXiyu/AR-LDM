@@ -5,7 +5,7 @@ from typing import Dict, Any
 import einops
 import hydra
 import numpy as np
-from tqdm import tqdm
+import time
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
@@ -236,6 +236,27 @@ class ARLDM(pl.LightningModule):
         self.text_encoder.resize_token_embeddings(clip_len)
         self.mm_encoder.text_encoder.resize_token_embeddings(blip_len)
 
+    def freeze_chars_emb(self, char_name, unfreeze=False):
+        try:
+            nominal_name = self.nominal_name_mapping[char_name][1]
+        except KeyError:
+            nominal_name = char_name
+        if unfreeze:
+            print("unfreezing char emb:", char_name)
+            clip_token_id = self.clip_tokenizer.convert_tokens_to_ids(nominal_name)
+            blip_token_id = self.blip_tokenizer.convert_tokens_to_ids(nominal_name)
+            self.text_encoder.text_model.embeddings.token_embedding.weight.data[clip_token_id].requires_grad = True
+            self.mm_encoder.text_encoder.embeddings.word_embeddings.weight.data[blip_token_id].requires_grad = True
+        else:
+            print("freezing char emb:", char_name)
+            clip_token_id = self.clip_tokenizer.convert_tokens_to_ids(nominal_name)
+            blip_token_id = self.blip_tokenizer.convert_tokens_to_ids(nominal_name)
+            self.text_encoder.text_model.embeddings.token_embedding.weight.data[clip_token_id].requires_grad = False
+            self.mm_encoder.text_encoder.embeddings.word_embeddings.weight.data[blip_token_id].requires_grad = False
+
+    def resize_time_embeddings(self, num_time_steps):
+        self.time_embeddings = nn.Embedding(num_time_steps, 768)
+
     @staticmethod
     def freeze_params(params):
         for param in params:
@@ -398,17 +419,18 @@ class ARLDM(pl.LightningModule):
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
         noise_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states, attention_mask).sample
-        loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
+        # loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
+        loss = F.mse_loss(noise_pred[_B * V:], noise[_B * V:], reduction="none").mean([1, 2, 3]).mean()
 
         if self.args.contrastive:
             noisy_latents_seen = torch.stack(noisy_latents.chunk(B)[:-1], 0)
-            noisy_latents_unseen = noisy_latents.chunk(B)[-1]
+            # noisy_latents_unseen = noisy_latents.chunk(B)[-1]
             noisy_latents_seen = einops.rearrange(noisy_latents_seen, 'b v c h w -> (b v) c h w')
             repeat_time = noisy_latents_seen.shape[0] // V
-            noisy_latents_unseen = einops.repeat(noisy_latents_unseen, 'b c h w -> (b n) c h w', n=repeat_time)
+            # noisy_latents_unseen = einops.repeat(noisy_latents_unseen, 'b c h w -> (b n) c h w', n=repeat_time)
             timestep_seen = timesteps[:_B * V]
             timestep_unseen = timesteps[_B * V:]
-            timestep_unseen = timestep_unseen.repeat(repeat_time)
+            # timestep_unseen = timestep_unseen.repeat(repeat_time)
             # noisy latents are seen + unseen (batch_size * 5 + 5 more unseen images)
             positive_noise_pred = self.unet(noisy_latents_seen, timestep_seen, positive_embeddings, positive_mask).sample
             # negative_noise_pred = self.unet(noisy_latents_unseen, timestep_unseen, negative_embeddings, negative_mask).sample
@@ -418,35 +440,18 @@ class ARLDM(pl.LightningModule):
             anchor_positive_distance = F.mse_loss(unseen_noise_pred, positive_noise_pred, reduction="none").mean([1, 2, 3])
             # anchor_negative_distance = F.mse_loss(unseen_noise_pred, negative_noise_pred, reduction="none").mean([1, 2, 3])
 
-            margin = 1.0  # Set the desired margin
             triplet_loss = torch.clamp(anchor_positive_distance, min=0, max=1.0).mean()
 
-            loss = loss + self.args.contrastive_weight * triplet_loss
+            loss += self.args.contrastive_weight * triplet_loss
 
 
         if self.args.distillation and self.teacher_model is not None:
             with torch.no_grad():
-                teacher_noise_pred = self.teacher_model.unet(noisy_latents, timesteps, encoder_hidden_states,
-                                                             attention_mask).sample
-
-            distillation_loss = F.mse_loss(noise_pred, teacher_noise_pred, reduction='none')
-            seen_mask = ~unseen_flag.flatten() # seen mask, flags sample True if seen
-            if seen_mask.any():
-                distillation_loss = distillation_loss[seen_mask].mean() # no distillation if all samples are unseen
-                loss = loss + self.args.distillation_weight * distillation_loss
+                teacher_noise_pred = self.teacher_model.unet(noisy_latents[:_B * V], timesteps[:_B * V], encoder_hidden_states[:_B * V],
+                                                             attention_mask[:_B * V]).sample
+            seen_pred = noise_pred[:_B * V]
+            loss += F.mse_loss(seen_pred, teacher_noise_pred, reduction='none').mean() * self.args.distillation_weight
         return loss
-
-    def contrastive_loss(self, positive_noise_pred, negative_noise_pred):
-
-        positive_noise_pred = rearrange(positive_noise_pred, '(b n) c h w -> b n c h w', n=5)
-        negative_noise_pred = rearrange(negative_noise_pred, '(b n) c h w -> b n c h w', n=5)
-        cosine_sim = F.cosine_similarity(positive_noise_pred, negative_noise_pred, dim=2)
-        mean_cosine_sim = cosine_sim.mean(dim=1)
-        cosine_distance = 1 - mean_cosine_sim
-        mask = cosine_distance < 0.1
-        cosine_distance_loss = -(cosine_distance * mask).mean()
-        return cosine_distance_loss
-
 
     def sample(self, batch):
         original_images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
@@ -740,10 +745,18 @@ def train_unseen(args: DictConfig) -> None:
             param.requires_grad = False
         model.teacher_model = teacher_model
 
-
     model.text_emb_resize(model.ada_clip_tokenizer_len, model.ada_blip_tokenizer_len)
 
+    seen_chars = args.get(args.dataset).new_tokens
+    for char in seen_chars:
+        model.freeze_chars_emb(char, unfreeze=False)
+    for char in target_chars:
+        model.freeze_chars_emb(char, unfreeze=False)
+
     for i, cur_char in enumerate(target_chars):
+        for c in target_chars:
+            model.freeze_chars_emb(c, unfreeze=False)
+        model.freeze_chars_emb(cur_char, unfreeze=True)
 
         checkpoint_callback = ModelCheckpoint(
             dirpath=os.path.join(args.ckpt_dir, args.run_name),
@@ -792,7 +805,7 @@ def test_unseen(args: DictConfig) -> None:
         args['cur_char'] = cur_char
         for j in range(k + 1):
             args['history_char'].append(target_chars[j])
-        test_model_file = args.test_model_file + f"epoch=99-{cur_char}.ckpt"
+        test_model_file = os.path.join(args.test_model_file, f"epoch=99-{cur_char}.ckpt")
         model = ARLDM.load_from_checkpoint(test_model_file, args=args, strict=False)
 
         predictor = pl.Trainer(
@@ -803,6 +816,9 @@ def test_unseen(args: DictConfig) -> None:
             strategy=DDPStrategy(find_unused_parameters=False),
             precision=16
         )
+
+        if args.use_reference_image:
+            model.resize_time_embeddings(6)
 
         for past_char in args['history_char']:
             args['cur_char'] = past_char
@@ -824,6 +840,12 @@ def test_unseen(args: DictConfig) -> None:
                 checkpoint_output_dir = os.path.join(args.sample_output_dir, f"{k}_{cur_char}")
                 os.makedirs(checkpoint_output_dir, exist_ok=True)
 
+                local_rank = predictor.local_rank
+
+                time_delay = int(local_rank) * 5
+                time.sleep(time_delay)
+                print(f"Rank: {local_rank} is waiting for {time_delay} sec to begin saving images and texts!")
+
                 for i, story in enumerate(generated_images):
                     character_output_dir = os.path.join(checkpoint_output_dir, past_char)
                     if not os.path.exists(character_output_dir):
@@ -839,8 +861,9 @@ def test_unseen(args: DictConfig) -> None:
                         image.save(image_path)
 
                 original_images = [original_images[i:i + 5] for i in range(0, len(original_images), 5)] \
-                    if args.task == 'visualization' else [original_images[i:i + 4] for i in
+                    if args.task == 'visualization' or args.use_reference_image else [original_images[i:i + 4] for i in
                                                           range(0, len(original_images), 4)]
+
                 for i, story in enumerate(original_images):
                     character_output_dir = os.path.join(checkpoint_output_dir, past_char)
                     img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
@@ -859,6 +882,10 @@ def test_unseen(args: DictConfig) -> None:
                     text_path = os.path.join(img_folder_name, 'texts.json')
                     with open(text_path, 'w') as f:
                         json.dump(story, f, indent=4)
+                # print the rank and it is finished
+                print(f"Rank: {local_rank} is finished saving images and texts!")
+            del dataloader
+        del predictor, model
 
 def test_seen(args: DictConfig) -> None:
     target_chars = args.get(args.dataset).target_chars
@@ -962,7 +989,7 @@ def custom_unseen(args: DictConfig) -> None:
                 image.save(image_path)
 
 
-@hydra.main(config_path=".", config_name="config")
+@hydra.main(config_path=".", config_name="config-test")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)

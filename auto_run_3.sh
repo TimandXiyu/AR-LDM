@@ -1,18 +1,12 @@
 #!/bin/bash
 
 test_models=(
-    "/home/xiyu/projects/AR-LDM/ckpts/flintstones_contrast_weight_0.1/"
-    "/home/xiyu/projects/AR-LDM/ckpts/flintstones_contrast_weight_0.5/"
-    "/home/xiyu/projects/AR-LDM/ckpts/flintstones_contrast_weight_1.0/"
-    "/home/xiyu/projects/AR-LDM/ckpts/flintstones_contrast_weight_1.5/"
-    "/home/xiyu/projects/AR-LDM/ckpts/flintstones_contrast_weight_2.0/"
+    "/home/xiyu/projects/AR-LDM/ckpts/flintstones_us10_contrast_weight_0.15/"
+    "/home/xiyu/projects/AR-LDM/ckpts/flintstones_us10_contrast_weight_0.2/"
 )
 output_dirs=(
-    "/home/xiyu/projects/AR-LDM/ckpts/output_images_contrast_weight_0.1/"
-    "/home/xiyu/projects/AR-LDM/ckpts/output_images_contrast_weight_0.5/"
-    "/home/xiyu/projects/AR-LDM/ckpts/output_images_contrast_weight_1.0/"
-    "/home/xiyu/projects/AR-LDM/ckpts/output_images_contrast_weight_1.5/"
-    "/home/xiyu/projects/AR-LDM/ckpts/output_images_contrast_weight_2.0/"
+    "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_contrast_weight_0.15/"
+    "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_contrast_weight_0.2/"
 )
 
 # Loop through each test model file path and corresponding output directory

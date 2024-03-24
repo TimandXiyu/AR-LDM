@@ -53,6 +53,7 @@ class StoryDataset(Dataset):
         self.h5file = h5py.File(args.get(args.dataset).hdf5_file, "r")
         self.new_followings = json.load(open(os.path.join(self.data_dir, 'new_followings.json'), 'r'))
         self.seen_len = {"train": len(self.h5file['train']['text']), "test": len(self.h5file['test']['text'])}
+        self.reference_img = json.load(open(os.path.join(self.data_dir, 'references_images.json'), 'r'))
         # get 10% random samples from train and test split of the h5 file
         if self.subset == "train":
             seed = self.random_seeds[len(self.args.history_char)]
@@ -330,6 +331,16 @@ class StoryDataset(Dataset):
                 texts = [self.descriptions[i] for i in story]
         else:
             raise ValueError("subset must be either train, test_seen, or test_unseen")
+
+        if self.args.use_reference_image:
+            reference_img = self.reference_img[self.cur_char]
+            # load image from .npy file
+            reference_img = os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(reference_img))
+            reference_img = np.load(reference_img)
+            reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]
+            reference_text = self.nominal_name_mapping[self.cur_char][1]
+            images = [reference_img] + images
+            texts = [reference_text] + texts
 
         source_images = torch.stack([self.blip_image_processor(im) for im in images])
         images = images[1:] if self.args.task == 'continuation' else images

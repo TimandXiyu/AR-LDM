@@ -201,7 +201,7 @@ class LDM(pl.LightningModule):
     def forward(self, batch):
         if self.args.freeze_clip and hasattr(self, "text_encoder"):
             self.text_encoder.eval()
-        images, captions, attention_mask, _, _, _, texts = batch
+        images, captions, attention_mask, _, _, _, _, _ = batch
         B, V, S = captions.shape
         src_V = V + 1 if self.task == 'continuation' else V
         images = torch.flatten(images, 0, 1)
@@ -218,12 +218,6 @@ class LDM(pl.LightningModule):
 
         attention_mask = ~(attention_mask.bool())  # B * V, (src_V + 1) * S
         attention_mask[classifier_free_idx] = False
-
-        # B, V, V, S
-        square_mask = torch.triu(torch.ones((V, V), device=self.device)).bool()
-        square_mask = square_mask.unsqueeze(0).unsqueeze(-1).expand(B, V, V, S)
-        square_mask = square_mask.reshape(B * V, V * S)
-        attention_mask[:, -V * S:] = torch.logical_or(square_mask, attention_mask[:, -V * S:])
 
         latents = self.vae.encode(images).latent_dist.sample()
         latents = latents * 0.18215

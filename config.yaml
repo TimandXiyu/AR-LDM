@@ -7,15 +7,16 @@ num_cpu_cores: -1  # number of cpu cores
 grad_accumulation_steps: 2 # gradient accumulation steps
 seed: 0  # random seed
 ckpt_dir: ./ckpts # checkpoint directory
-run_name: flintstones_us10_persistent_pos_only_confirm # name for this run
+run_name: flintstones_us10_source_free_contrast=0.1_distill=2.0_freezing_emb # name for this run
 cur_char: # cache current character
 history_char: # cache history character, don't fill this field
 char_tokens: # cache unseen character tokens
 inject_lora: False # whether to inject lora
-distillation: False # whether to use distillation
-distillation_weight: 1.0 # distillation weight
-contrastive: True # whether to use contrastive learning
-contrastive_weight: 0.25 # contrastive weight
+distillation: True # whether to use distillation
+distillation_weight: 2.0 # distillation weight
+contrastive: False # whether to use contrastive learning
+contrastive_weight: 0.1 # contrastive weight
+use_reference_image: False
 
 # task
 dataset: flintstones_unseen # pororo flintstones vistsis vistdii | flintstones_unseen
@@ -50,7 +51,7 @@ unet_model:
   low_cpu_mem_usage: False
 
 flintstones_unseen:
-  target_chars: ["slaghoople", "texarock_2", "gazoo"]
+  target_chars: ["slaghoople", "texarock_2", "gazoo", "theft", "yellow_tiger", "helmet_police", "piano_man", "red_hair_lady", "rockzilla", "texarock_1"]
   data_dir: ./data/flintstones_data
   target_dir: ./data/flintstones_data/target_chars
   hdf5_file: ./data/flintstones_rare-char_rmeoved.h5

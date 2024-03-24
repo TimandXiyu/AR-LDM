@@ -22,9 +22,11 @@ import csv
 import pandas as pd
 from tqdm import tqdm
 
+CUDA="cuda:0"
+
 
 def get_metrics_singdir(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_more_ref_seen/texarock_1/"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_source_free_contrast=0.1_distill=2.0_freezing_emb_seen/texarock_1"
 
     evaluator = Evaluation(args)
 
@@ -52,7 +54,7 @@ def get_metrics_singdir(args: DictConfig) -> None:
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_persistent_pos_only_confirm"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_source_free_contrast=0.1_distill=2.0_freezing_emb_reference"
 
     evaluator = Evaluation(args)
     fid_scores = []
@@ -100,7 +102,7 @@ def get_metrics(args: DictConfig) -> None:
             fid_scores.append(ckpt_fid_scores)
 
     # Save the FID scores as a CSV file
-    csv_file = "fid_scores/fid_scores_distill=1.5.csv"
+    csv_file = "fid_scores/baseline+SF+contrast=0+distill=2.0+frozenemb+refer.csv"
     data = {}
     for i, ckpt_fid_scores in enumerate(fid_scores):
         data[f'Checkpoint {i}'] = ckpt_fid_scores
@@ -123,7 +125,7 @@ class Evaluation(object):
     Hosting fid model for evaluation
     """
     def __init__(self, args):
-        self.device = "cuda:0"
+        self.device = CUDA
         block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
         self.fid_model = InceptionV3([block_idx]).to(self.device)
         self.fid_model.eval()

@@ -1,26 +1,24 @@
 #!/bin/bash
 
 run_name=(
-    "flintstones_contrast_weight_0.1"
-    "flintstones_contrast_weight_0.5"
-    "flintstones_contrast_weight_1.0"
-    "flintstones_contrast_weight_1.5"
-    "flintstones_contrast_weight_2.0"
+    "flintstones_us10_source_free_contrast_0.2_distill_0.5"
+    "flintstones_us10_source_free_contrast_0.1_distill_1.5"
 )
 contrast_weight=(
+    0.2
     0.1
+)
+distill_weight=(
     0.5
-    1.0
     1.5
-    2.0
 )
 
 # Loop through each test model file path and corresponding output directory
 for i in "${!run_name[@]}"
 do
     name="${run_name[i]}"
-    w="${contrast_weight[i]}"
-    echo "run_name=$name"
-    echo "contrastive_weight=$w"
-    python main.py "run_name=$name" "contrastive_weight=$w"
+    cw="${contrast_weight[i]}"
+    dw="${distill_weight[i]}"
+    echo "run_name=$name", "contrastive_weight=$cw", "distillation_weight=$dw"
+    python main.py "run_name=$name" "contrastive_weight=$cw" "distillation_weight=$dw"
 done
