@@ -60,6 +60,8 @@ class LightningDataset(pl.LightningDataModule):
             self.train_data = data.StoryDataset("train", self.args)
         if stage == "test":
             self.test_data = data.StoryDataset("test", self.args)
+        if stage == "val":
+            self.test_data = data.StoryDataset("val", self.args)
         if stage == "custom":
             self.test_data = data.CustomStory(self.args)
         if stage == "train":
@@ -123,8 +125,6 @@ class ARLDM(pl.LightningModule):
             block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
             self.inception = InceptionV3([block_idx])
 
-        if args.distillation:
-            self.teacher_model = None
         self.clip_tokenizer = CLIPTokenizer.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="tokenizer")
         self.blip_tokenizer = init_tokenizer()
         # init clip and blip tokenizers same as dataloader to get the token id for unseen chars
@@ -306,7 +306,7 @@ class ARLDM(pl.LightningModule):
         if self.args.freeze_blip and hasattr(self, "mm_encoder"):
             self.mm_encoder.eval()
         images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
-         unseen_flag, contrastive_caption, contrastive_mask, unseen_text_img_pairs = batch
+           unseen_flag, contrastive_caption, contrastive_mask, unseen_text_img_pairs = batch
         """
         images: [B, V, 3, H, W]
         captions: [B, V, S]
@@ -317,14 +317,13 @@ class ARLDM(pl.LightningModule):
         texts: [B, V, S]
         """
         B, V, S = captions.shape
-        src_V = V + 1 if self.task == 'continuation' else V
+        src_V = V + 1 if self.task == 'continuation' or self.args.use_reference_image else V
         images = torch.flatten(images, 0, 1)
         captions = torch.flatten(captions, 0, 1)
         attention_mask = torch.flatten(attention_mask, 0, 1)
         source_images = torch.flatten(source_images, 0, 1)
         source_caption = torch.flatten(source_caption, 0, 1)
         source_attention_mask = torch.flatten(source_attention_mask, 0, 1)
-        unseen_flag = torch.stack(unseen_flag, 0).transpose(1, 0)
         if self.args.contrastive:
             positive_caption = contrastive_caption.chunk(2, dim=1)[0]
             negative_caption = contrastive_caption.chunk(2, dim=1)[1]
@@ -334,24 +333,26 @@ class ARLDM(pl.LightningModule):
             negative_caption = torch.flatten(negative_caption, 0, 1)
             positive_mask = torch.flatten(positive_mask, 0, 1)
             negative_mask = torch.flatten(negative_mask, 0, 1)
-        unseen_images, unseen_source_images, unseen_captions, unseen_source_caption, unseen_attention_mask, \
-            unseen_source_attention_mask = unseen_text_img_pairs
-        unseen_images = einops.rearrange(unseen_images, 'b v c h w -> (b v) c h w').chunk(2, dim=0)[0]
-        unseen_source_images = einops.rearrange(unseen_source_images, 'b v c h w -> (b v) c h w').chunk(2, dim=0)[0]
-        unseen_captions = einops.rearrange(unseen_captions, 'b v s -> (b v) s').chunk(2, dim=0)[0]
-        unseen_source_caption = einops.rearrange(unseen_source_caption, 'b v s -> (b v) s').chunk(2, dim=0)[0]
-        unseen_attention_mask = einops.rearrange(unseen_attention_mask, 'b v s -> (b v) s').chunk(2, dim=0)[0]
-        unseen_source_attention_mask = einops.rearrange(unseen_source_attention_mask, 'b v s -> (b v) s').chunk(2, dim=0)[0]
+        if not self.args.pretrain:
+            unseen_images, unseen_source_images, unseen_captions, unseen_source_caption, unseen_attention_mask, \
+                unseen_source_attention_mask = unseen_text_img_pairs
+            chunk_count = unseen_images.shape[0]
+            unseen_images = einops.rearrange(unseen_images, 'b v c h w -> (b v) c h w').chunk(chunk_count, dim=0)[0]
+            unseen_source_images = einops.rearrange(unseen_source_images, 'b v c h w -> (b v) c h w').chunk(chunk_count, dim=0)[0]
+            unseen_captions = einops.rearrange(unseen_captions, 'b v s -> (b v) s').chunk(chunk_count, dim=0)[0]
+            unseen_source_caption = einops.rearrange(unseen_source_caption, 'b v s -> (b v) s').chunk(chunk_count, dim=0)[0]
+            unseen_attention_mask = einops.rearrange(unseen_attention_mask, 'b v s -> (b v) s').chunk(chunk_count, dim=0)[0]
+            unseen_source_attention_mask = einops.rearrange(unseen_source_attention_mask, 'b v s -> (b v) s').chunk(chunk_count, dim=0)[0]
 
-        # fuse unseen pairs with the original pairs
-        images = torch.cat([images, unseen_images], dim=0)
-        source_images = torch.cat([source_images, unseen_source_images], dim=0)
-        captions = torch.cat([captions, unseen_captions], dim=0)
-        attention_mask = torch.cat([attention_mask, unseen_attention_mask], dim=0)
-        source_caption = torch.cat([source_caption, unseen_source_caption], dim=0)
-        source_attention_mask = torch.cat([source_attention_mask, unseen_source_attention_mask], dim=0)
-        _B = B
-        B += 1
+            # fuse unseen pairs with the original pairs
+            images = torch.cat([images, unseen_images], dim=0)
+            source_images = torch.cat([source_images, unseen_source_images], dim=0)
+            captions = torch.cat([captions, unseen_captions], dim=0)
+            attention_mask = torch.cat([attention_mask, unseen_attention_mask], dim=0)
+            source_caption = torch.cat([source_caption, unseen_source_caption], dim=0)
+            source_attention_mask = torch.cat([source_attention_mask, unseen_source_attention_mask], dim=0)
+            _B = B
+            B += 1
 
         classifier_free_idx = np.random.rand(B * V) < 0.1
 
@@ -419,8 +420,7 @@ class ARLDM(pl.LightningModule):
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
         noise_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states, attention_mask).sample
-        # loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
-        loss = F.mse_loss(noise_pred[_B * V:], noise[_B * V:], reduction="none").mean([1, 2, 3]).mean()
+        loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
 
         if self.args.contrastive:
             noisy_latents_seen = torch.stack(noisy_latents.chunk(B)[:-1], 0)
@@ -443,21 +443,13 @@ class ARLDM(pl.LightningModule):
             triplet_loss = torch.clamp(anchor_positive_distance, min=0, max=1.0).mean()
 
             loss += self.args.contrastive_weight * triplet_loss
-
-
-        if self.args.distillation and self.teacher_model is not None:
-            with torch.no_grad():
-                teacher_noise_pred = self.teacher_model.unet(noisy_latents[:_B * V], timesteps[:_B * V], encoder_hidden_states[:_B * V],
-                                                             attention_mask[:_B * V]).sample
-            seen_pred = noise_pred[:_B * V]
-            loss += F.mse_loss(seen_pred, teacher_noise_pred, reduction='none').mean() * self.args.distillation_weight
         return loss
 
     def sample(self, batch):
         original_images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
-            unseen_flag, _, _, _ = batch
+             unseen_flag, _, _, _ = batch
         B, V, S = captions.shape
-        src_V = V + 1 if self.task == 'continuation' else V
+        src_V = V + 1 if self.task == 'continuation' or self.args.use_reference_image else V
         original_images = torch.flatten(original_images, 0, 1)
         captions = torch.flatten(captions, 0, 1)
         attention_mask = torch.flatten(attention_mask, 0, 1)
@@ -738,13 +730,6 @@ def train_unseen(args: DictConfig) -> None:
 
     logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
 
-    if args.distillation:
-        teacher_model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
-        teacher_model.eval()
-        for param in teacher_model.parameters():
-            param.requires_grad = False
-        model.teacher_model = teacher_model
-
     model.text_emb_resize(model.ada_clip_tokenizer_len, model.ada_blip_tokenizer_len)
 
     seen_chars = args.get(args.dataset).new_tokens
@@ -840,12 +825,6 @@ def test_unseen(args: DictConfig) -> None:
                 checkpoint_output_dir = os.path.join(args.sample_output_dir, f"{k}_{cur_char}")
                 os.makedirs(checkpoint_output_dir, exist_ok=True)
 
-                local_rank = predictor.local_rank
-
-                time_delay = int(local_rank) * 5
-                time.sleep(time_delay)
-                print(f"Rank: {local_rank} is waiting for {time_delay} sec to begin saving images and texts!")
-
                 for i, story in enumerate(generated_images):
                     character_output_dir = os.path.join(checkpoint_output_dir, past_char)
                     if not os.path.exists(character_output_dir):
@@ -882,10 +861,6 @@ def test_unseen(args: DictConfig) -> None:
                     text_path = os.path.join(img_folder_name, 'texts.json')
                     with open(text_path, 'w') as f:
                         json.dump(story, f, indent=4)
-                # print the rank and it is finished
-                print(f"Rank: {local_rank} is finished saving images and texts!")
-            del dataloader
-        del predictor, model
 
 def test_seen(args: DictConfig) -> None:
     target_chars = args.get(args.dataset).target_chars
@@ -989,7 +964,7 @@ def custom_unseen(args: DictConfig) -> None:
                 image.save(image_path)
 
 
-@hydra.main(config_path=".", config_name="config-test")
+@hydra.main(config_path=".", config_name="config")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)

@@ -22,11 +22,11 @@ import csv
 import pandas as pd
 from tqdm import tqdm
 
-CUDA="cuda:0"
+CUDA="cuda:2"
 
 
 def get_metrics_singdir(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_source_free_contrast=0.1_distill=2.0_freezing_emb_seen/texarock_1"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/archived/output_images_us10_source_free_contrast=0_distill=2.0_freezing_emb_seen/texarock_1"
 
     evaluator = Evaluation(args)
 
@@ -54,7 +54,7 @@ def get_metrics_singdir(args: DictConfig) -> None:
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_source_free_contrast=0.1_distill=2.0_freezing_emb_reference"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_source_free_contrast=0_distill=2.0_freezing_emb_ALL"
 
     evaluator = Evaluation(args)
     fid_scores = []
@@ -102,7 +102,7 @@ def get_metrics(args: DictConfig) -> None:
             fid_scores.append(ckpt_fid_scores)
 
     # Save the FID scores as a CSV file
-    csv_file = "fid_scores/baseline+SF+contrast=0+distill=2.0+frozenemb+refer.csv"
+    csv_file = "fid_scores/baseline+SF+contrast=0+distill=2.0+frozenemb+ALL.csv"
     data = {}
     for i, ckpt_fid_scores in enumerate(fid_scores):
         data[f'Checkpoint {i}'] = ckpt_fid_scores
@@ -155,8 +155,8 @@ def main(args: DictConfig) -> None:
     if args.num_cpu_cores > 0:
         torch.set_num_threads(args.num_cpu_cores)
 
-    get_metrics(args)
-    # get_metrics_singdir(args)
+    # get_metrics(args)
+    get_metrics_singdir(args)
 
 if __name__ == '__main__':
     main()

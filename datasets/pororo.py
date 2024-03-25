@@ -89,7 +89,15 @@ class StoryDataset(Dataset):
             return_tensors="pt",
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
-        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index
+
+        # generate placeholders
+        unseen_flag = [False] * 5
+        contrastive_caption = torch.zeros(1, self.max_length).long()
+        contrastive_mask = torch.zeros(1, self.max_length).long()
+        unseen_text_img_pairs = torch.zeros(1, 5).long()
+
+        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
+            unseen_flag, contrastive_caption, contrastive_mask, unseen_text_img_pairs
 
     def __len__(self):
         if not hasattr(self, 'h5'):

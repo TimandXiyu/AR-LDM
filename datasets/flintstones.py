@@ -28,7 +28,7 @@ class StoryDataset(Dataset):
 
         self.h5_file = args.get(args.dataset).hdf5_file
         self.subset = subset
-        if subset == "test":
+        if subset == "test" or subset == "val":
             self.early_stop = args.stop_sample_early if args.stop_sample_early else False
         else:
             self.early_stop = False
@@ -73,7 +73,7 @@ class StoryDataset(Dataset):
         source_images = torch.stack([self.blip_image_processor(im) for im in images])
         images = images[1:] if self.args.task == 'continuation' else images
         images = torch.stack([self.augment(im) for im in images]) \
-            if self.subset in ['train', 'val'] else torch.from_numpy(np.array(images))
+            if self.subset in ['train'] else torch.from_numpy(np.array(images))
 
         texts = self.h5['text'][index].decode('utf-8').split('|')
 
@@ -95,16 +95,22 @@ class StoryDataset(Dataset):
             return_tensors="pt",
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
-        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index
-    """
-    images: [5, 3, 256, 256]
-    captions: [5, 91]
-    attention_mask: [5, 91]
-    source_images: [5, 3, 224, 224]
-    source_caption: [5, 91]
-    source_attention_mask: [5, 91]
-    
-    """
+        unseen_flag = 5 * [False]
+        contrastive_captions = torch.zeros([5, self.max_length])
+        contrastive_attention_mask = torch.zeros([5, self.max_length])
+        unseen_images = torch.zeros([5, 3, 256, 256])
+        unseen_source_images = torch.zeros([5, 3, 224, 224])
+        unseen_captions = torch.zeros([5, self.max_length])
+        unseen_source_caption = torch.zeros([5, self.max_length])
+        unseen_attention_mask = torch.zeros([5, self.max_length])
+        unseen_source_attention_mask = torch.zeros([5, self.max_length])
+        unseen_text_img_pairs = (
+            unseen_images, unseen_source_images, unseen_captions, unseen_source_caption, unseen_attention_mask,
+            unseen_source_attention_mask)
+
+
+        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
+                  unseen_flag, contrastive_captions, contrastive_attention_mask, unseen_text_img_pairs
 
     def __len__(self):
         if not hasattr(self, 'h5'):
