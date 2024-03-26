@@ -420,7 +420,10 @@ class ARLDM(pl.LightningModule):
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
         noise_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states, attention_mask).sample
-        loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
+        if self.args.train_sample_supervised:
+            loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
+        else:
+            loss = F.mse_loss(noise_pred[_B * V:], noise[_B * V:], reduction="none").mean([1, 2, 3]).mean()
 
         if self.args.contrastive:
             noisy_latents_seen = torch.stack(noisy_latents.chunk(B)[:-1], 0)
@@ -436,6 +439,10 @@ class ARLDM(pl.LightningModule):
             # negative_noise_pred = self.unet(noisy_latents_unseen, timestep_unseen, negative_embeddings, negative_mask).sample
 
             unseen_noise_pred = einops.repeat(noise_pred[_B * V:], 'b c h w -> (b n) c h w', n=repeat_time)
+
+            # maxpool positive pred and unseen noise pred using kernel 4x4
+            positive_noise_pred = F.max_pool2d(positive_noise_pred, 4)
+            unseen_noise_pred = F.max_pool2d(unseen_noise_pred, 4)
 
             anchor_positive_distance = F.mse_loss(unseen_noise_pred, positive_noise_pred, reduction="none").mean([1, 2, 3])
             # anchor_negative_distance = F.mse_loss(unseen_noise_pred, negative_noise_pred, reduction="none").mean([1, 2, 3])
@@ -786,6 +793,8 @@ def train_unseen(args: DictConfig) -> None:
 def test_unseen(args: DictConfig) -> None:
     target_chars = args.get(args.dataset).target_chars
     for k, cur_char in enumerate(target_chars):
+        # if k <= 5:
+        #     continue
         args['history_char'] = []
         args['cur_char'] = cur_char
         for j in range(k + 1):
@@ -824,6 +833,12 @@ def test_unseen(args: DictConfig) -> None:
             if args.sample_output_dir is not None:
                 checkpoint_output_dir = os.path.join(args.sample_output_dir, f"{k}_{cur_char}")
                 os.makedirs(checkpoint_output_dir, exist_ok=True)
+
+                local_rank = predictor.local_rank
+
+                time_delay = int(local_rank) * 5
+                time.sleep(time_delay)
+                print(f"Rank: {local_rank} is waiting for {time_delay} sec to begin saving images and texts!")
 
                 for i, story in enumerate(generated_images):
                     character_output_dir = os.path.join(checkpoint_output_dir, past_char)

@@ -52,25 +52,20 @@ class StoryDataset(Dataset):
         self.unseen_char_anno = json.load(open(os.path.join(self.data_dir, 'flintstones_unseen_anno.json'), 'r'))
         self.h5file = h5py.File(args.get(args.dataset).hdf5_file, "r")
         self.new_followings = json.load(open(os.path.join(self.data_dir, 'new_followings.json'), 'r'))
-        self.seen_test_len =  len(self.h5file['test']['text'])
+        self.seen_len = {"train": len(self.h5file['train']['text']), "test": len(self.h5file['test']['text'])}
         self.reference_img = json.load(open(os.path.join(self.data_dir, 'references_images.json'), 'r'))
-        # read frome data_dir / distillation_reference_images_by_val
-        self.seen_train = os.listdir(os.path.join(self.data_dir, 'distillation_reference_images_by_val'))
-        self.seen_train = [os.path.join(self.data_dir, 'distillation_reference_images_by_val', i) for i in self.seen_train]
-        self.seen_train_len = len(self.seen_train)
-
         # get 10% random samples from train and test split of the h5 file
         if self.subset == "train":
             seed = self.random_seeds[len(self.args.history_char)]
             self.rand = Random()
-            self.rand.seed(seed)
-            self.seen_train_indexes = self.rand.sample(range(self.seen_train_len), 40)
-            self.seen_test_indexes = list(range(self.seen_test_len))
+            self.rand.seed(1234)
+            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 24)
+            self.seen_test_indexes = list(range(self.seen_len["test"]))
         else:
             self.rand = Random()
             self.rand.seed(0)
-            self.seen_train_indexes = self.rand.sample(range(self.seen_train_len), 40)
-            self.seen_test_indexes = list(range(self.seen_test_len))
+            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 24)
+            self.seen_test_indexes = list(range(self.seen_len["test"]))
 
         self.unseen_char = dict()
 
@@ -224,11 +219,8 @@ class StoryDataset(Dataset):
             # If no seen characters are found, randomly select a train example
             if len(seen_chars) == 0:
                 while True:
-                    random_index = random.choice(list(range(self.seen_train_len)))
-                    # load the text from json
-                    positive_texts = os.path.join(self.data_dir, 'distillation_reference_images_by_val', str(random_index), 'texts.json')
-                    with open(positive_texts, "r") as f:
-                        positive_texts = json.load(f)
+                    random_index = random.choice(list(range(self.seen_len['train'])))
+                    positive_texts = self.h5file["train"]['text'][random_index].decode('utf-8').split('|')
                     for char in self.args.get(self.dataset).new_tokens:
                         if any(char.lower() in text.lower() for text in positive_texts):
                             seen_chars.append(char)
@@ -246,17 +238,15 @@ class StoryDataset(Dataset):
 
     def __getitem__(self, index):
         if self.subset == 'train':
-            story_folder = os.path.join(self.data_dir, "distillation_reference_images_by_val", str(index))
-            images = []
+            # load the seen characters
+            index = self.seen_train_indexes[index]
+            images = list()
             for i in range(5):
-                image_path = os.path.join(story_folder, f"{i}_original.png")
-                image = Image.open(image_path)
-                image = np.array(image)
-                images.append(image)
-            text_path = os.path.join(story_folder, "texts.json")
-            with open(text_path, "r") as f:
-                texts = json.load(f)
-
+                im = self.h5file["train"]['image{}'.format(i)][index]
+                im = cv2.imdecode(im, cv2.IMREAD_COLOR)
+                idx = random.randint(0, 4)
+                images.append(im[idx * 128: (idx + 1) * 128])
+            texts = self.h5file["train"]['text'][index].decode('utf-8').split('|')
             # load the unseen characters
             unseen_story = self.unseen_train[random.randint(0, len(self.unseen_train) - 1)]
             unseen_images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in unseen_story]

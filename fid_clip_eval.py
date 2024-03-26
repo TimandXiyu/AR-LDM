@@ -22,7 +22,7 @@ import csv
 import pandas as pd
 from tqdm import tqdm
 
-CUDA="cuda:2"
+CUDA="cuda:0"
 
 
 def get_metrics_singdir(args: DictConfig) -> None:
@@ -54,7 +54,7 @@ def get_metrics_singdir(args: DictConfig) -> None:
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_source_free_contrast=0_distill=2.0_freezing_emb_ALL"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_us10_train_sup_c=0_frozen_emb"
 
     evaluator = Evaluation(args)
     fid_scores = []
@@ -136,16 +136,20 @@ class Evaluation(object):
         ])
 
     def get_inception_feature(self, images):
-        images = [Image.open(img) for img in images]
-        images = torch.stack([self.fid_augment(image) for image in images])
-        images = images.type(torch.FloatTensor).to(self.device)
-        images = (images + 1) / 2
-        images = F.interpolate(images, size=(299, 299), mode='bilinear', align_corners=False)
-        pred = self.fid_model(images)[0]
+        try:
+            images = [Image.open(img) for img in images]
+            images = torch.stack([self.fid_augment(image) for image in images])
+            images = images.type(torch.FloatTensor).to(self.device)
+            images = (images + 1) / 2
+            images = F.interpolate(images, size=(299, 299), mode='bilinear', align_corners=False)
+            pred = self.fid_model(images)[0]
 
-        if pred.shape[2] != 1 or pred.shape[3] != 1:
-            pred = F.adaptive_avg_pool2d(pred, output_size=(1, 1))
-        return pred.reshape(-1, 2048).cpu().numpy()
+            if pred.shape[2] != 1 or pred.shape[3] != 1:
+                pred = F.adaptive_avg_pool2d(pred, output_size=(1, 1))
+            return pred.reshape(-1, 2048).cpu().numpy()
+        except OSError:
+            print(f"Image {images} is corrupted.")
+            return []
 
 
 @hydra.main(config_path=".", config_name="config")
@@ -155,8 +159,8 @@ def main(args: DictConfig) -> None:
     if args.num_cpu_cores > 0:
         torch.set_num_threads(args.num_cpu_cores)
 
-    # get_metrics(args)
-    get_metrics_singdir(args)
+    get_metrics(args)
+    # get_metrics_singdir(args)
 
 if __name__ == '__main__':
     main()

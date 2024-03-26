@@ -1,23 +1,24 @@
 # device
 mode: train_unseen
-gpu_ids: [0,1]  # gpu ids
+gpu_ids: [0,1,2,3]  # gpu ids
 batch_size: 2 # each item denotes one story
 num_workers: 4 # number of workers
 num_cpu_cores: -1  # number of cpu cores
-grad_accumulation_steps: 4 # gradient accumulation steps
+grad_accumulation_steps: 2 # gradient accumulation steps
 seed: 0  # random seed
 ckpt_dir: ./ckpts # checkpoint directory
-run_name: flintstones_us10_source_free_contrast=0.1_distill=1.0_freezing_emb # name for this run
+run_name: flintstones_us10_train_sup_c=0_frozen_emb # name for this run
 cur_char: # cache current character
 history_char: # cache history character, don't fill this field
 char_tokens: # cache unseen character tokens
 inject_lora: False # whether to inject lora
-distillation: True # whether to use distillation
-distillation_weight: 1.0 # distillation weight
-contrastive: True # whether to use contrastive learning
+distillation: False # deprecated！！！！！！！！！！！！！！！
+distillation_weight: 2.0 # distillation weight
+contrastive: False # whether to use contrastive learning
 contrastive_weight: 0.1 # contrastive weight
 use_reference_image: False
 pretrain: False
+train_sample_supervised: True
 
 # task
 dataset: flintstones_unseen # pororo flintstones vistsis vistdii | flintstones_unseen
@@ -40,7 +41,7 @@ calculate_text_clipscore: False # whether to calculate text clipscore
 calculate_visual_clipscore: False # whether to calculate visual clipscore, need to have reference images
 scheduler: ddim  # ddim pndm
 guidance_scale: 6  # guidance scale
-num_inference_steps: 100  # number of inference steps
+num_inference_steps: 50  # number of inference steps
 sample_output_dir: ./ckpts/output_images # output directory
 custom_prompts: ./datasets/fs_special_token.txt # custom prompts file, only used for custom_sample
 stop_sample_early: # only sample for a few stories
