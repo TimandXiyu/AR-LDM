@@ -59,12 +59,12 @@ class StoryDataset(Dataset):
             seed = self.random_seeds[len(self.args.history_char)]
             self.rand = Random()
             self.rand.seed(seed)
-            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 40)
+            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 24)
             self.seen_test_indexes = list(range(self.seen_len["test"]))
         else:
             self.rand = Random()
             self.rand.seed(0)
-            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 40)
+            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 24)
             self.seen_test_indexes = list(range(self.seen_len["test"]))
 
         self.unseen_char = dict()
@@ -343,7 +343,7 @@ class StoryDataset(Dataset):
             texts = [reference_text] + texts
 
         source_images = torch.stack([self.blip_image_processor(im) for im in images])
-        images = images[1:] if self.args.task == 'continuation' else images
+        images = images[1:] if self.args.task == 'continuation' or self.args.use_reference_image else images
         images = torch.stack([self.augment(im) for im in images]) \
             if self.subset in ['train', 'val','train_unseen'] else torch.from_numpy(np.array(images))
 

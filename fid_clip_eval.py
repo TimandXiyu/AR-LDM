@@ -54,7 +54,7 @@ def get_metrics_singdir(args: DictConfig) -> None:
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_source_free_contrast=0.1_distill=2.0_freezing_emb_reference"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/FINALSET_generated_distillonly_c=0.1_distill=2.0_frozenEMB"
 
     evaluator = Evaluation(args)
     fid_scores = []
@@ -102,7 +102,7 @@ def get_metrics(args: DictConfig) -> None:
             fid_scores.append(ckpt_fid_scores)
 
     # Save the FID scores as a CSV file
-    csv_file = "fid_scores/baseline+SF+contrast=0+distill=2.0+frozenemb+refer.csv"
+    csv_file = "fid_scores/FINAL_flintstones_us10_distillonly_contrast=0.1_distill=2.0_frozenEMB.csv"
     data = {}
     for i, ckpt_fid_scores in enumerate(fid_scores):
         data[f'Checkpoint {i}'] = ckpt_fid_scores

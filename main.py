@@ -236,6 +236,62 @@ class ARLDM(pl.LightningModule):
         self.text_encoder.resize_token_embeddings(clip_len)
         self.mm_encoder.text_encoder.resize_token_embeddings(blip_len)
 
+    def extend_orthogonal(self, num_new_vectors, encoder_type='clip'):
+        # get the embedding for seen_chars
+        existing_emb = []
+        for char in self.args.get(self.args.dataset).new_tokens:
+            if encoder_type == 'clip':
+                clip_token_id = self.clip_tokenizer.convert_tokens_to_ids(char)
+                existing_emb.append(
+                    self.text_encoder.text_model.embeddings.token_embedding.weight.data[clip_token_id].clone().detach())
+            elif encoder_type == 'blip':
+                blip_token_id = self.blip_tokenizer.convert_tokens_to_ids(char)
+                existing_emb.append(
+                    self.mm_encoder.text_encoder.embeddings.word_embeddings.weight.data[blip_token_id].clone().detach())
+        existing_emb = torch.stack(existing_emb, dim=0)
+
+        hidden_dim = existing_emb.shape[1]
+
+        # Start with the existing embeddings
+        all_vectors = existing_emb
+
+        # Iteratively generate and orthogonalize new vectors
+        for _ in range(num_new_vectors):
+            new_vector = torch.randn(hidden_dim)
+            for existing_vector in all_vectors:
+                projection = torch.dot(existing_vector, new_vector) / torch.dot(existing_vector, existing_vector)
+                new_vector -= projection * existing_vector
+
+            new_vector = new_vector / torch.norm(new_vector)  # Normalize
+            all_vectors = torch.cat([all_vectors, new_vector.unsqueeze(0)], dim=0)
+
+        # Extract the new orthogonal vectors
+        new_orthogonal_vectors = all_vectors[-num_new_vectors:, :]
+
+        # Update the embeddings in the model
+        new_emb = None
+        if encoder_type == 'clip':
+            new_emb = self.text_encoder.text_model.embeddings.token_embedding.weight.data.clone().detach()
+        elif encoder_type == 'blip':
+            new_emb = self.mm_encoder.text_encoder.embeddings.word_embeddings.weight.data.clone().detach()
+
+        # Assign the new orthogonal vectors to the corresponding new tokens
+        for i, char in enumerate(self.args.get(self.args.dataset).target_chars):
+            char_id = None
+            if encoder_type == 'clip':
+                char_id = self.clip_tokenizer.convert_tokens_to_ids(char)
+            elif encoder_type == 'blip':
+                char_id = self.blip_tokenizer.convert_tokens_to_ids(char)
+
+            if char_id is not None and i < new_orthogonal_vectors.size(0):
+                new_emb[char_id] = new_orthogonal_vectors[i]
+
+        # Update the model's embeddings
+        if encoder_type == 'clip':
+            self.text_encoder.text_model.embeddings.token_embedding.weight.data = new_emb
+        elif encoder_type == 'blip':
+            self.mm_encoder.text_encoder.embeddings.word_embeddings.weight.data = new_emb
+
     def freeze_chars_emb(self, char_name, unfreeze=False):
         try:
             nominal_name = self.nominal_name_mapping[char_name][1]
@@ -306,7 +362,7 @@ class ARLDM(pl.LightningModule):
         if self.args.freeze_blip and hasattr(self, "mm_encoder"):
             self.mm_encoder.eval()
         images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
-         unseen_flag, contrastive_caption, contrastive_mask, unseen_text_img_pairs = batch
+           unseen_flag, contrastive_caption, contrastive_mask, unseen_text_img_pairs = batch
         """
         images: [B, V, 3, H, W]
         captions: [B, V, S]
@@ -317,14 +373,13 @@ class ARLDM(pl.LightningModule):
         texts: [B, V, S]
         """
         B, V, S = captions.shape
-        src_V = V + 1 if self.task == 'continuation' else V
+        src_V = V + 1 if self.task == 'continuation' or self.args.use_reference_image else V
         images = torch.flatten(images, 0, 1)
         captions = torch.flatten(captions, 0, 1)
         attention_mask = torch.flatten(attention_mask, 0, 1)
         source_images = torch.flatten(source_images, 0, 1)
         source_caption = torch.flatten(source_caption, 0, 1)
         source_attention_mask = torch.flatten(source_attention_mask, 0, 1)
-        unseen_flag = torch.stack(unseen_flag, 0).transpose(1, 0)
         if self.args.contrastive:
             positive_caption = contrastive_caption.chunk(2, dim=1)[0]
             negative_caption = contrastive_caption.chunk(2, dim=1)[1]
@@ -419,8 +474,8 @@ class ARLDM(pl.LightningModule):
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
         noise_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states, attention_mask).sample
-        # loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
-        loss = F.mse_loss(noise_pred[_B * V:], noise[_B * V:], reduction="none").mean([1, 2, 3]).mean()
+        loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
+        # loss = F.mse_loss(noise_pred[_B * V:], noise[_B * V:], reduction="none").mean([1, 2, 3]).mean()
 
         if self.args.contrastive:
             noisy_latents_seen = torch.stack(noisy_latents.chunk(B)[:-1], 0)
@@ -457,7 +512,7 @@ class ARLDM(pl.LightningModule):
         original_images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
             unseen_flag, _, _, _ = batch
         B, V, S = captions.shape
-        src_V = V + 1 if self.task == 'continuation' else V
+        src_V = V + 1 if self.task == 'continuation' or self.args.use_reference_image else V
         original_images = torch.flatten(original_images, 0, 1)
         captions = torch.flatten(captions, 0, 1)
         attention_mask = torch.flatten(attention_mask, 0, 1)
@@ -746,6 +801,8 @@ def train_unseen(args: DictConfig) -> None:
         model.teacher_model = teacher_model
 
     model.text_emb_resize(model.ada_clip_tokenizer_len, model.ada_blip_tokenizer_len)
+    model.extend_orthogonal(len(args.get(args.dataset).target_chars), encoder_type='clip')
+    model.extend_orthogonal(len(args.get(args.dataset).target_chars), encoder_type='blip')
 
     seen_chars = args.get(args.dataset).new_tokens
     for char in seen_chars:
@@ -805,8 +862,7 @@ def test_unseen(args: DictConfig) -> None:
         args['cur_char'] = cur_char
         for j in range(k + 1):
             args['history_char'].append(target_chars[j])
-        test_model_file = os.path.join(args.test_model_file, f"epoch=99-{cur_char}.ckpt")
-        model = ARLDM.load_from_checkpoint(test_model_file, args=args, strict=False)
+        model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
 
         predictor = pl.Trainer(
             accelerator='gpu',
@@ -820,72 +876,67 @@ def test_unseen(args: DictConfig) -> None:
         if args.use_reference_image:
             model.resize_time_embeddings(6)
 
-        for past_char in args['history_char']:
-            args['cur_char'] = past_char
-            dataloader = LightningDataset(args)
-            dataloader.setup('test_unseen')
+        args['cur_char'] = cur_char
+        dataloader = LightningDataset(args)
+        dataloader.setup('test_unseen')
 
-            predictions = predictor.predict(model, dataloader)
-            generated_images = [elem for sublist in predictions for elem in sublist[0]]
-            original_images = [elem for sublist in predictions for elem in sublist[3]]
-            texts = [elem for sublist in predictions for elem in sublist[4]]
-            indexes = [elem for sublist in predictions for elem in sublist[5]]
-            indexes = [int(i) for i in indexes]
-            unseen_flags = [elem for sublist in predictions for elem in sublist[6]]
+        predictions = predictor.predict(model, dataloader)
+        generated_images = [elem for sublist in predictions for elem in sublist[0]]
+        original_images = [elem for sublist in predictions for elem in sublist[3]]
+        texts = [elem for sublist in predictions for elem in sublist[4]]
+        indexes = [elem for sublist in predictions for elem in sublist[5]]
+        indexes = [int(i) for i in indexes]
+        unseen_flags = [elem for sublist in predictions for elem in sublist[6]]
 
-            if not os.path.exists(args.sample_output_dir):
-                os.makedirs(args.sample_output_dir, exist_ok=True)
+        if not os.path.exists(args.sample_output_dir):
+            os.makedirs(args.sample_output_dir, exist_ok=True)
 
-            if args.sample_output_dir is not None:
-                checkpoint_output_dir = os.path.join(args.sample_output_dir, f"{k}_{cur_char}")
-                os.makedirs(checkpoint_output_dir, exist_ok=True)
+        if args.sample_output_dir is not None:
+            checkpoint_output_dir = os.path.join(args.sample_output_dir, f"{k}_{cur_char}")
+            os.makedirs(checkpoint_output_dir, exist_ok=True)
 
-                local_rank = predictor.local_rank
+            local_rank = predictor.local_rank
 
-                time_delay = int(local_rank) * 5
-                time.sleep(time_delay)
-                print(f"Rank: {local_rank} is waiting for {time_delay} sec to begin saving images and texts!")
+            time_delay = int(local_rank) * 5
+            time.sleep(time_delay)
+            print(f"Rank: {local_rank} is waiting for {time_delay} sec to begin saving images and texts!")
 
-                for i, story in enumerate(generated_images):
-                    character_output_dir = os.path.join(checkpoint_output_dir, past_char)
-                    if not os.path.exists(character_output_dir):
-                        os.makedirs(character_output_dir)
-                    img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
-                    if not os.path.exists(img_folder_name):
-                        os.makedirs(img_folder_name, exist_ok=True)
-                    for j, image in enumerate(story):
-                        if unseen_flags[i][j]:
-                            image_path = os.path.join(img_folder_name, f'{j}_generated_eval.png')
-                        else:
-                            image_path = os.path.join(img_folder_name, f'{j}_generated.png')
-                        image.save(image_path)
+            for i, story in enumerate(generated_images):
+                character_output_dir = checkpoint_output_dir
+                if not os.path.exists(character_output_dir):
+                    os.makedirs(character_output_dir)
+                img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
+                if not os.path.exists(img_folder_name):
+                    os.makedirs(img_folder_name, exist_ok=True)
+                for j, image in enumerate(story):
+                    if unseen_flags[i][j]:
+                        image_path = os.path.join(img_folder_name, f'{j}_generated_eval.png')
+                    else:
+                        image_path = os.path.join(img_folder_name, f'{j}_generated.png')
+                    image.save(image_path)
 
-                original_images = [original_images[i:i + 5] for i in range(0, len(original_images), 5)] \
-                    if args.task == 'visualization' or args.use_reference_image else [original_images[i:i + 4] for i in
-                                                          range(0, len(original_images), 4)]
+            original_images = [original_images[i:i + 5] for i in range(0, len(original_images), 5)] \
+                if args.task == 'visualization' or args.use_reference_image else [original_images[i:i + 4] for i in
+                                                      range(0, len(original_images), 4)]
 
-                for i, story in enumerate(original_images):
-                    character_output_dir = os.path.join(checkpoint_output_dir, past_char)
-                    img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
-                    if not os.path.exists(img_folder_name):
-                        os.makedirs(img_folder_name, exist_ok=True)
-                    for j, image in enumerate(story):
-                        if unseen_flags[i][j]:
-                            image_path = os.path.join(img_folder_name, f'{j}_original_eval.png')
-                        else:
-                            image_path = os.path.join(img_folder_name, f'{j}_original.png')
-                        image.save(image_path)
+            for i, story in enumerate(original_images):
+                character_output_dir = checkpoint_output_dir
+                img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
+                if not os.path.exists(img_folder_name):
+                    os.makedirs(img_folder_name, exist_ok=True)
+                for j, image in enumerate(story):
+                    if unseen_flags[i][j]:
+                        image_path = os.path.join(img_folder_name, f'{j}_original_eval.png')
+                    else:
+                        image_path = os.path.join(img_folder_name, f'{j}_original.png')
+                    image.save(image_path)
 
-                for i, story in enumerate(texts):
-                    character_output_dir = os.path.join(checkpoint_output_dir, past_char)
-                    img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
-                    text_path = os.path.join(img_folder_name, 'texts.json')
-                    with open(text_path, 'w') as f:
-                        json.dump(story, f, indent=4)
-                # print the rank and it is finished
-                print(f"Rank: {local_rank} is finished saving images and texts!")
-            del dataloader
-        del predictor, model
+            for i, story in enumerate(texts):
+                character_output_dir = checkpoint_output_dir
+                img_folder_name = os.path.join(character_output_dir, f'{indexes[i]}')
+                text_path = os.path.join(img_folder_name, 'texts.json')
+                with open(text_path, 'w') as f:
+                    json.dump(story, f, indent=4)
 
 def test_seen(args: DictConfig) -> None:
     target_chars = args.get(args.dataset).target_chars
@@ -989,7 +1040,7 @@ def custom_unseen(args: DictConfig) -> None:
                 image.save(image_path)
 
 
-@hydra.main(config_path=".", config_name="config-test")
+@hydra.main(config_path="./config", config_name="config-test")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)
