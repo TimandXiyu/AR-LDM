@@ -26,7 +26,7 @@ CUDA="cuda:0"
 
 
 def get_metrics_singdir(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/output_images_us10_source_free_contrast=0.1_distill=2.0_freezing_emb_seen/texarock_1"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_original_text"
 
     evaluator = Evaluation(args)
 
@@ -54,71 +54,87 @@ def get_metrics_singdir(args: DictConfig) -> None:
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/FINALSET_generated_distillonly_c=0.1_distill=2.0_frozenEMB"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_200ep_forzenclipblip_SAMPLINGrefer"
 
     evaluator = Evaluation(args)
-    fid_scores = []
+    fid_scores = {}
 
     # Sort the checkpoint folders based on their numerical prefix
     ckpt_dirs = sorted(os.listdir(data_dir), key=lambda x: int(x.split('_', 1)[0]))
 
-    for k, ckpt_dir in enumerate(ckpt_dirs):
+    for ckpt_dir in ckpt_dirs:
         ckpt_path = os.path.join(data_dir, ckpt_dir)
         if os.path.isdir(ckpt_path):
-            ckpt_fid_scores = []
-
-            characters = [d.split('_', 1)[1] for d in ckpt_dirs[:ckpt_dirs.index(ckpt_dir) + 1]]
-            char_dirs = sorted(os.listdir(ckpt_path), key=lambda x: characters.index(x))
-
+            char_dirs = os.listdir(ckpt_path)
+            original_inception_features = []
+            generated_inception_features = []
             for char_dir in char_dirs:
-                char_path = os.path.join(ckpt_path, char_dir)
-                if os.path.isdir(char_path):
-                    original_inception_features = []
-                    generated_inception_features = []
+                story_pth = os.path.join(ckpt_path, char_dir)
+                if os.path.isdir(story_pth):
+                    original_images = []
+                    generated_images = []
+                    for img_file in os.listdir(story_pth):
+                        if img_file.endswith("_original_eval.png"):
+                            original_images.append(os.path.join(story_pth, img_file))
+                        elif img_file.endswith("_generated_eval.png"):
+                            generated_images.append(os.path.join(story_pth, img_file))
 
-                    for story_dir in os.listdir(char_path):
-                        story_path = os.path.join(char_path, story_dir)
-                        if os.path.isdir(story_path):
-                            original_images = []
-                            generated_images = []
+                    if original_images and generated_images:
+                        original_inception_features.extend(evaluator.get_inception_feature(original_images))
+                        generated_inception_features.extend(evaluator.get_inception_feature(generated_images))
 
-                            for img_file in os.listdir(story_path):
-                                if img_file.endswith("_original_eval.png"):
-                                    original_images.append(os.path.join(story_path, img_file))
-                                elif img_file.endswith("_generated_eval.png"):
-                                    generated_images.append(os.path.join(story_path, img_file))
+            if original_inception_features and generated_inception_features:
+                original_inception_features = np.vstack(original_inception_features)
+                generated_inception_features = np.vstack(generated_inception_features)
+                fid = calculate_fid_given_features(original_inception_features, generated_inception_features)
+                print(f"FID for character {ckpt_dir}: {fid}")
 
-                            if original_images and generated_images:
-                                original_inception_features.extend(evaluator.get_inception_feature(original_images))
-                                generated_inception_features.extend(evaluator.get_inception_feature(generated_images))
-
-                    if original_inception_features and generated_inception_features:
-                        original_inception_features = np.vstack(original_inception_features)
-                        generated_inception_features = np.vstack(generated_inception_features)
-                        fid = calculate_fid_given_features(original_inception_features, generated_inception_features)
-                        print(f"FID for character {char_dir} in {ckpt_dir}: {fid}")
-                        ckpt_fid_scores.append(fid)
-
-            fid_scores.append(ckpt_fid_scores)
+                if ckpt_dir not in fid_scores:
+                    fid_scores[ckpt_dir] = []
+                fid_scores[ckpt_dir].append(fid)
 
     # Save the FID scores as a CSV file
-    csv_file = "fid_scores/FINAL_flintstones_us10_distillonly_contrast=0.1_distill=2.0_frozenEMB.csv"
-    data = {}
-    for i, ckpt_fid_scores in enumerate(fid_scores):
-        data[f'Checkpoint {i}'] = ckpt_fid_scores
+    csv_file = "fid_scores/oneshot_training_descriptive_text_ver2_frozenclipblip.csv"
+    df = pd.DataFrame.from_dict(fid_scores, orient='index', columns=["0"])
+    df.index.name = 'Character'
 
-    characters = [d.split('_', 1)[1] for d in ckpt_dirs]
-    max_length = max(len(values) for values in data.values())
-
-    for key in data:
-        data[key].extend([float('nan')] * (max_length - len(data[key])))
-
-    row_names = [i for i in characters]
-    df = pd.DataFrame.from_dict(data, orient='index', columns=row_names)
-
-    print(df.T)
-    df.T.to_csv(csv_file)
+    print(df)
+    df.to_csv(csv_file)
     print(f"FID scores saved to {csv_file}")
+
+def get_unifed_metrics(args: DictConfig) -> None:
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_200ep_forzenclipblip"
+
+    evaluator = Evaluation(args)
+
+    # Sort the checkpoint folders based on their numerical prefix
+    ckpt_dirs = sorted(os.listdir(data_dir), key=lambda x: int(x.split('_', 1)[0]))
+    original_inception_features = []
+    generated_inception_features = []
+    for ckpt_dir in tqdm(ckpt_dirs):
+        ckpt_path = os.path.join(data_dir, ckpt_dir)
+        if os.path.isdir(ckpt_path):
+            char_dirs = os.listdir(ckpt_path)
+            for char_dir in char_dirs:
+                story_pth = os.path.join(ckpt_path, char_dir)
+                if os.path.isdir(story_pth):
+                    original_images = []
+                    generated_images = []
+                    for img_file in os.listdir(story_pth):
+                        if img_file.endswith("_original_eval.png") or img_file.endswith("_original.png"):
+                            original_images.append(os.path.join(story_pth, img_file))
+                        elif img_file.endswith("_generated_eval.png") or img_file.endswith("_generated.png"):
+                            generated_images.append(os.path.join(story_pth, img_file))
+
+                    if original_images and generated_images:
+                        original_inception_features.extend(evaluator.get_inception_feature(original_images))
+                        generated_inception_features.extend(evaluator.get_inception_feature(generated_images))
+
+    if original_inception_features and generated_inception_features:
+        original_inception_features = np.vstack(original_inception_features)
+        generated_inception_features = np.vstack(generated_inception_features)
+        fid = calculate_fid_given_features(original_inception_features, generated_inception_features)
+        print(f"FID for all character: {fid}")
 
 class Evaluation(object):
     """
@@ -155,7 +171,8 @@ def main(args: DictConfig) -> None:
     if args.num_cpu_cores > 0:
         torch.set_num_threads(args.num_cpu_cores)
 
-    get_metrics(args)
+    # get_metrics(args)
+    get_unifed_metrics(args)
     # get_metrics_singdir(args)
 
 if __name__ == '__main__':

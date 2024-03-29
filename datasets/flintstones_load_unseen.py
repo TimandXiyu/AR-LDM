@@ -56,15 +56,14 @@ class StoryDataset(Dataset):
         self.reference_img = json.load(open(os.path.join(self.data_dir, 'references_images.json'), 'r'))
         # get 10% random samples from train and test split of the h5 file
         if self.subset == "train":
-            seed = self.random_seeds[len(self.args.history_char)]
             self.rand = Random()
-            self.rand.seed(seed)
-            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 24)
+            self.rand.seed(0)
+            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 32)
             self.seen_test_indexes = list(range(self.seen_len["test"]))
         else:
             self.rand = Random()
             self.rand.seed(0)
-            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 24)
+            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 32)
             self.seen_test_indexes = list(range(self.seen_len["test"]))
 
         self.unseen_char = dict()
@@ -81,62 +80,125 @@ class StoryDataset(Dataset):
         print("parsing data started...")
         self.unseen_with_dir = os.listdir(self.target_dir)
 
-        target_ids = []
-        if self.cur_char is None:
-            print("warning, you are using a placeholder for current character, make sure you are testing seen examples!")
-            self.cur_char = 'slaghoople' # just a placeholder, should only be used when testing for seen examples!
-        if self.cur_char not in self.unseen_with_dir:
-            for k, v in self.descriptions.items():
-                npc_ls = [ele.lower() for ele in characters[k]]
-                if self.cur_char in v.lower():
-                    target_ids.append(k)
-                if self.cur_char in npc_ls:
-                    target_ids.append(k)
+        if not self.args.load_parallel:
+            target_ids = []
+            if self.cur_char is None:
+                print("warning, you are using a placeholder for current character, make sure you are testing seen examples!")
+                self.cur_char = 'slaghoople' # just a placeholder, should only be used when testing for seen examples!
+            if self.cur_char not in self.unseen_with_dir:
+                for k, v in self.descriptions.items():
+                    npc_ls = [ele.lower() for ele in characters[k]]
+                    if self.cur_char in v.lower():
+                        target_ids.append(k)
+                    if self.cur_char in npc_ls:
+                        target_ids.append(k)
+            else:
+                target_ids = os.listdir(os.path.join(self.target_dir, self.cur_char))
+                target_ids = [i.split('.')[0] for i in target_ids]
+
+            target_ids = list(set(target_ids))
+            target_ids.sort()
+            if self.use_handpick and self.cur_char in list(self.new_followings.keys()):
+                unseen_train_ids = list(self.new_followings[self.cur_char].values())
+                unseen_train_ids = [item for sublist in unseen_train_ids for item in sublist]
+            else:
+                rs = np.random.RandomState(56)
+                unseen_train_ids = rs.choice(target_ids, size=10, replace=False)
+                unseen_train_ids = unseen_train_ids.tolist()
+            unseen_test_ids = [i for i in target_ids if i not in unseen_train_ids]
+            unseen_train_story = []
+            unseen_test_story = []
+            for k, v in self.followings.copy().items():
+                v = [k] + v
+                if any(id in unseen_train_ids for id in v) and all(id not in unseen_test_ids for id in v):
+                    unseen_train_story.append(k)
+                if any(id in unseen_test_ids for id in v) and all(id not in unseen_train_ids for id in v):
+                    unseen_test_story.append(k)
+            # handpicked stories come with complete list of followings, just load them
+            if self.use_handpick and self.cur_char in list(self.new_followings.keys()):
+                unseen_train_story = self.new_followings[self.cur_char]
+            else:
+                unseen_train_story = {starting_id: [starting_id] + self._followings[starting_id] for starting_id in unseen_train_story}
+                unseen_train_story = {k: v for k, v in unseen_train_story.items() if len(v) == 5}
+
+            unseen_test_story = {starting_id: [starting_id] + self._followings[starting_id] for starting_id in unseen_test_story}
+            unseen_test_story = {k: v for k, v in unseen_test_story.items() if len(v) == 5}
+
+            self.char_anno = {}
+            for k, v in self.unseen_char_anno.items():
+                if k.split(":")[0] == self.cur_char:
+                    self.char_anno[k.split(":")[1]] = v
         else:
-            target_ids = os.listdir(os.path.join(self.target_dir, self.cur_char))
-            target_ids = [i.split('.')[0] for i in target_ids]
+            self.unseen_train_all = {}
+            self.unseen_test_all = {}
+            self.chars_annos = {}
 
-        target_ids = list(set(target_ids))
-        target_ids.sort()
-        if self.use_handpick and self.cur_char in list(self.new_followings.keys()):
-            unseen_train_ids = list(self.new_followings[self.cur_char].values())
-            unseen_train_ids = [item for sublist in unseen_train_ids for item in sublist]
+            for char in self.target_chars:
+                target_ids = []
+                if char not in self.unseen_with_dir:
+                    for k, v in self.descriptions.items():
+                        npc_ls = [ele.lower() for ele in characters[k]]
+                        if char in v.lower():
+                            target_ids.append(k)
+                        if char in npc_ls:
+                            target_ids.append(k)
+                else:
+                    target_ids = os.listdir(os.path.join(self.target_dir, char))
+                    target_ids = [i.split('.')[0] for i in target_ids]
+
+                target_ids = list(set(target_ids))
+                target_ids.sort()
+                if self.use_handpick and char in list(self.new_followings.keys()):
+                    unseen_train_ids = list(self.new_followings[char].values())
+                    unseen_train_ids = [item for sublist in unseen_train_ids for item in sublist]
+                else:
+                    rs = np.random.RandomState(56)
+                    unseen_train_ids = rs.choice(target_ids, size=10, replace=False)
+                    unseen_train_ids = unseen_train_ids.tolist()
+                unseen_test_ids = [i for i in target_ids if i not in unseen_train_ids]
+                unseen_train_story = []
+                unseen_test_story = []
+                for k, v in self.followings.copy().items():
+                    v = [k] + v
+                    if any(id in unseen_train_ids for id in v) and all(id not in unseen_test_ids for id in v):
+                        unseen_train_story.append(k)
+                    if any(id in unseen_test_ids for id in v) and all(id not in unseen_train_ids for id in v):
+                        unseen_test_story.append(k)
+                # handpicked stories come with complete list of followings, just load them
+                if self.use_handpick and char in list(self.new_followings.keys()):
+                    unseen_train_story = self.new_followings[char]
+                else:
+                    unseen_train_story = {starting_id: [starting_id] + self._followings[starting_id] for starting_id in
+                                          unseen_train_story}
+                    unseen_train_story = {k: v for k, v in unseen_train_story.items() if len(v) == 5}
+
+                unseen_test_story = {starting_id: [starting_id] + self._followings[starting_id] for starting_id in
+                                     unseen_test_story}
+                unseen_test_story = {k: v for k, v in unseen_test_story.items() if len(v) == 5}
+
+                char_anno = {}
+                for k, v in self.unseen_char_anno.items():
+                    if k.split(":")[0] == char:
+                        char_anno[k.split(":")[1]] = v
+                self.unseen_train_all[char] = unseen_train_story
+                self.unseen_test_all[char] = unseen_test_story
+                self.chars_annos[char] = char_anno
+        if not self.args.load_parallel:
+            self.unseen_train = unseen_train_story
+            self.unseen_test = unseen_test_story
+            self.unseen_train = list(self.unseen_train.values())
+            self.unseen_test = list(self.unseen_test.values())
         else:
-            rs = np.random.RandomState(56)
-            unseen_train_ids = rs.choice(target_ids, size=10, replace=False)
-            unseen_train_ids = unseen_train_ids.tolist()
-        unseen_test_ids = [i for i in target_ids if i not in unseen_train_ids]
-        unseen_train_story = []
-        unseen_test_story = []
-        for k, v in self.followings.copy().items():
-            v = [k] + v
-            if any(id in unseen_train_ids for id in v) and all(id not in unseen_test_ids for id in v):
-                unseen_train_story.append(k)
-            if any(id in unseen_test_ids for id in v) and all(id not in unseen_train_ids for id in v):
-                unseen_test_story.append(k)
-        # handpicked stories come with complete list of followings, just load them
-        if self.use_handpick and self.cur_char in list(self.new_followings.keys()):
-            unseen_train_story = self.new_followings[self.cur_char]
-        else:
-            unseen_train_story = {starting_id: [starting_id] + self._followings[starting_id] for starting_id in unseen_train_story}
-            unseen_train_story = {k: v for k, v in unseen_train_story.items() if len(v) == 5}
-
-        unseen_test_story = {starting_id: [starting_id] + self._followings[starting_id] for starting_id in unseen_test_story}
-        unseen_test_story = {k: v for k, v in unseen_test_story.items() if len(v) == 5}
-
-        print('parsing data finished')
-
-        self.cur_char_anno = {}
-        for k, v in self.unseen_char_anno.items():
-            if k.split(":")[0] == self.cur_char:
-                self.cur_char_anno[k.split(":")[1]] = v
-
-        self.unseen_train = unseen_train_story
-        self.unseen_test = unseen_test_story
-
-        # convert dict to list
-        self.unseen_train = list(self.unseen_train.values())
-        self.unseen_test = list(self.unseen_test.values())
+            self.unseen_train = []
+            self.unseen_test = []
+            self.char_anno = {}
+            for k, v in self.unseen_train_all.items():
+                self.unseen_train += list(v.values())
+            for k, v in self.unseen_test_all.items():
+                self.unseen_test += list(v.values())
+            for k, v in self.chars_annos.items():
+                for kk, vv in v.items():
+                    self.char_anno[kk] = vv
 
         self.dataset = args.dataset
         self.max_length = args.get(args.dataset).max_length
@@ -174,113 +236,103 @@ class StoryDataset(Dataset):
             transforms.Normalize([0.48145466, 0.4578275, 0.40821073], [0.26862954, 0.26130258, 0.27577711])
         ])
 
-    def get_negative_samples(self, story=None):
-        # Randomly select a train_unseen example
-        if story is None:
-            story = random.choice(self.unseen_train)
-        else:
-            story = story
-
-        # Get the text descriptions for the current train_unseen example
-        placeholder_name = self.nominal_name_mapping[self.cur_char][0]
-        special_token = self.nominal_name_mapping[self.cur_char][1]
-        if self.cur_char not in self.unseen_with_dir:
-            negative_texts = [self.descriptions[i] for i in story]
-            negative_texts = [text.lower() for text in negative_texts]
-            negative_texts = [text.replace(self.cur_char, special_token) for text in negative_texts]
-        else:
-            negative_texts = []
-            for id in story:
-                try:
-                    anno = self.cur_char_anno[id]
-                    anno = anno.replace(placeholder_name, special_token)
-                    negative_texts.append(anno)
-                except KeyError:
-                    negative_texts.append(self.descriptions[id])
-
-        available_chars = [char for char in self.args.get(self.dataset).new_tokens if char.lower() not in ' '.join(negative_texts).lower()]
-
-        known_char = random.choice(available_chars)
-
-        # Replace the new character in the text with the known character
-        negative_texts = [text.replace(special_token, known_char) for text in negative_texts]
-
-        return negative_texts
-
-    def get_positive_samples(self, texts=None):
-        while True:
-            positive_texts = texts
-            # Identify seen characters in the text descriptions
-            seen_chars = []
-            for char in self.args.get(self.dataset).new_tokens:
-                if any(char.lower() in text.lower() for text in positive_texts):
-                    seen_chars.append(char)
-
-            # If no seen characters are found, randomly select a train example
-            if len(seen_chars) == 0:
-                while True:
-                    random_index = random.choice(list(range(self.seen_len['train'])))
-                    positive_texts = self.h5file["train"]['text'][random_index].decode('utf-8').split('|')
-                    for char in self.args.get(self.dataset).new_tokens:
-                        if any(char.lower() in text.lower() for text in positive_texts):
-                            seen_chars.append(char)
-                    if len(seen_chars) > 0:
-                        break
-
-            # randomly select the seen character to replace
-            prev_char = random.choice(seen_chars)
-
-            # Replace seen characters in the text with the current new character
-            special_token = self.nominal_name_mapping[self.cur_char][1]
-            positive_texts = [text.lower().replace(prev_char.lower(), special_token) for text in positive_texts]
-
-            return positive_texts
+        self.pos_neg_tags = []
+        self.pos_neg_tags_map = {'refer': 0, 'gt': 1, 'else': 2}
 
     def __getitem__(self, index):
         if self.subset == 'train':
             # load the seen characters
-            index = self.seen_train_indexes[index]
-            images = list()
-            for i in range(5):
-                im = self.h5file["train"]['image{}'.format(i)][index]
-                im = cv2.imdecode(im, cv2.IMREAD_COLOR)
-                idx = random.randint(0, 4)
-                images.append(im[idx * 128: (idx + 1) * 128])
-            texts = self.h5file["train"]['text'][index].decode('utf-8').split('|')
-            # load the unseen characters
-            unseen_story = self.unseen_train[random.randint(0, len(self.unseen_train) - 1)]
-            unseen_images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in unseen_story]
-            unseen_images = [np.load(img) for img in unseen_images]
-            unseen_images = [img[np.random.randint(0, img.shape[0])] for img in unseen_images]
+            if index < len(self.seen_train_indexes):
+                index = self.seen_train_indexes[index]
+                images = list()
+                for i in range(5):
+                    im = self.h5file["train"]['image{}'.format(i)][index]
+                    im = cv2.imdecode(im, cv2.IMREAD_COLOR)
+                    idx = random.randint(0, 4)
+                    images.append(im[idx * 128: (idx + 1) * 128])
+                texts = self.h5file["train"]['text'][index].decode('utf-8').split('|')
+                unseen_flags = [False] * 5
 
-            # Generate flags for frames corresponding to the unseen character
-            unseen_flags = []
-            for id in unseen_story:
-                if self.cur_char not in self.unseen_with_dir:
-                    if self.cur_char in self.descriptions[id].lower() or self.cur_char in [char.lower() for char in
-                                                                                           self.annotations[id][
-                                                                                               'characters']]:
-                        unseen_flags.append(True)
+                if self.args.use_reference_image:
+                    known_chars = self.args.get(self.dataset).new_tokens
+                    self.avail_chars = []
+                    self.cur_char = None
+                    for t in texts:
+                        for char in known_chars:
+                            if char.lower() in t.lower():
+                                self.avail_chars.append(char)
+                    # randomly select a character from the available characters
+                    self.cur_char = random.choice(self.avail_chars)
+                    # identify frames that has the current character
+                    self.pos_neg_tags = ['refer']
+                    for t in texts:
+                        if self.cur_char.lower() in t.lower():
+                            self.pos_neg_tags.append('gt')
+                        else:
+                            self.pos_neg_tags.append('else')
+                    if not self.cur_char:
+                        reference_img = torch.zeros(128, 128, 3)
+                        reference_text = ''
                     else:
-                        unseen_flags.append(False)
-                else:
-                    unseen_flags.append(id in self.cur_char_anno)
+                        reference_img = self.reference_img[self.cur_char]
+                        reference_img = os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(reference_img))
+                        reference_img = np.load(reference_img)
+                        reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]
+                        reference_text = self.cur_char
+                    images = [reference_img] + images
+                    texts = [reference_text] + texts
 
-            placeholder_name = self.nominal_name_mapping[self.cur_char][0]
-            special_token = self.nominal_name_mapping[self.cur_char][1]
-            if self.cur_char not in self.unseen_with_dir:
-                unseen_texts = [self.descriptions[i] for i in unseen_story]
-                unseen_texts = [text.lower() for text in unseen_texts]
-                unseen_texts = [text.replace(self.cur_char, special_token) for text in unseen_texts]
             else:
-                unseen_texts = []
+                unseen_story = self.unseen_train[index - len(self.seen_train_indexes)]
+                images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in unseen_story]
+                images = [np.load(img) for img in images]
+                images = [img[np.random.randint(0, img.shape[0])] for img in images]
+
+                # Generate flags for frames corresponding to the unseen character
+                unseen_flags = []
                 for id in unseen_story:
-                    try:
-                        anno = self.cur_char_anno[id]
-                        anno = anno.replace(placeholder_name, special_token)
-                        unseen_texts.append(anno)
-                    except KeyError:
-                        unseen_texts.append(self.descriptions[id])
+                    unseen_flags.append(id in self.char_anno)
+
+                for k, v in self.unseen_train_all.items():
+                    story_id = unseen_story[0]
+                    self.cur_char = None
+                    if story_id in v:
+                        self.cur_char = k
+                        break
+                if not self.cur_char:
+                    raise ValueError("Current character not found in the unseen train story")
+                if self.args.prompt_modification:
+                    placeholder_name = self.nominal_name_mapping[self.cur_char][0]
+                    special_token = self.nominal_name_mapping[self.cur_char][2]
+                    if self.cur_char not in self.unseen_with_dir:
+                        texts = [self.descriptions[i] for i in unseen_story]
+                        texts = [text.lower() for text in texts]
+                        texts = [text.replace(self.cur_char, special_token) for text in texts]
+                    else:
+                        texts = []
+                        for id in unseen_story:
+                            try:
+                                anno = self.char_anno[id]
+                                anno = anno.replace(placeholder_name, special_token)
+                                texts.append(anno)
+                            except KeyError:
+                                texts.append(self.descriptions[id])
+                else:
+                    texts = [self.descriptions[i] for i in unseen_story]
+
+                if self.args.use_reference_image:
+                    reference_img = self.reference_img[self.cur_char]
+                    reference_img = os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(reference_img))
+                    reference_img = np.load(reference_img)
+                    reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]
+                    reference_text = self.nominal_name_mapping[self.cur_char][2]
+                else:
+                    reference_img = torch.empty(128, 128, 3)
+                    reference_text = ''
+                if self.args.use_reference_image:
+                    images = [reference_img] + images
+                    texts = [reference_text] + texts
+                    self.pos_neg_tags = ['refer'] + 5 * ['gt']
 
         elif self.subset == 'test_seen':
             index = self.seen_test_indexes[index]
@@ -293,99 +345,58 @@ class StoryDataset(Dataset):
             texts = self.h5file["test"]['text'][index].decode('utf-8').split('|')
             unseen_flags = [False] * 5
         elif self.subset == 'test_unseen':
-            story = self.unseen_test[index]
-            images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in story]
+            unseen_story = self.unseen_test[index]
+            images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in
+                      unseen_story]
             images = [np.load(img) for img in images]
             images = [img[np.random.randint(0, img.shape[0])] for img in images]
 
             # Generate flags for frames corresponding to the unseen character
             unseen_flags = []
-            for id in story:
-                if self.cur_char not in self.unseen_with_dir:
-                    if self.cur_char in self.descriptions[id].lower() or self.cur_char in [char.lower() for char in
-                                                                                           self.annotations[id][
-                                                                                               'characters']]:
-                        unseen_flags.append(True)
-                    else:
-                        unseen_flags.append(False)
-                else:
-                    unseen_flags.append(id in self.cur_char_anno)
-
-            if self.args.prompt_modification: # inject unique tokens to the prompt
+            for id in unseen_story:
+                unseen_flags.append(id in self.char_anno)
+            if not self.cur_char:
+                raise ValueError("Current character not found in the unseen train story")
+            if self.args.prompt_modification:
                 placeholder_name = self.nominal_name_mapping[self.cur_char][0]
-                special_token = self.nominal_name_mapping[self.cur_char][1]
+                special_token = self.nominal_name_mapping[self.cur_char][2]
                 if self.cur_char not in self.unseen_with_dir:
-                    texts = [self.descriptions[i] for i in story]
+                    texts = [self.descriptions[i] for i in unseen_story]
                     texts = [text.lower() for text in texts]
                     texts = [text.replace(self.cur_char, special_token) for text in texts]
                 else:
                     texts = []
-                    for id in story:
+                    for id in unseen_story:
                         try:
-                            anno = self.cur_char_anno[id]
+                            anno = self.char_anno[id]
                             anno = anno.replace(placeholder_name, special_token)
                             texts.append(anno)
                         except KeyError:
                             texts.append(self.descriptions[id])
             else:
-                texts = [self.descriptions[i] for i in story]
+                texts = [self.descriptions[i] for i in unseen_story]
+            if self.args.use_reference_image:
+                reference_img = self.reference_img[self.cur_char]
+                # load image from .npy file
+                reference_img = os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(reference_img))
+                reference_img = np.load(reference_img)
+                reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]
+                reference_text = self.nominal_name_mapping[self.cur_char][2]
+            else:
+                reference_img = torch.empty(1, 3, 224, 224)
+                reference_text = torch.empty(1, self.max_length)
+            images = [reference_img] + images if self.args.use_reference_image else images
+            texts = [reference_text] + texts if self.args.use_reference_image else texts
         else:
             raise ValueError("subset must be either train, test_seen, or test_unseen")
-
-        if self.args.use_reference_image:
-            reference_img = self.reference_img[self.cur_char]
-            # load image from .npy file
-            reference_img = os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(reference_img))
-            reference_img = np.load(reference_img)
-            reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]
-            reference_text = self.nominal_name_mapping[self.cur_char][1]
-            images = [reference_img] + images
-            texts = [reference_text] + texts
 
         source_images = torch.stack([self.blip_image_processor(im) for im in images])
         images = images[1:] if self.args.task == 'continuation' or self.args.use_reference_image else images
         images = torch.stack([self.augment(im) for im in images]) \
             if self.subset in ['train', 'val','train_unseen'] else torch.from_numpy(np.array(images))
 
-        if self.subset == 'train':
-            unseen_source_images = torch.stack([self.blip_image_processor(im) for im in unseen_images])
-            unseen_images = unseen_images[1:] if self.args.task == 'continuation' else unseen_images
-            unseen_images = torch.stack([self.augment(im) for im in unseen_images]) \
-                if self.subset in ['train', 'val','train_unseen'] else torch.from_numpy(np.array(unseen_images))
-            tokenized = self.clip_tokenizer(
-                unseen_texts[1:] if self.args.task == 'continuation' else unseen_texts,
-                padding="max_length",
-                max_length=self.max_length,
-                truncation=False,
-                return_tensors="pt",
-            )
-            unseen_captions, unseen_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
-            tokenized = self.blip_tokenizer(
-                unseen_texts,
-                padding="max_length",
-                max_length=self.max_length,
-                truncation=False,
-                return_tensors="pt",
-            )
-            unseen_source_caption, unseen_source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
-            unseen_text_img_pairs = (
-            unseen_images, unseen_source_images, unseen_captions, unseen_source_caption, unseen_attention_mask,
-            unseen_source_attention_mask)
-
-        else:
-            # set unseen vars to placeholder tensors
-            unseen_images = torch.zeros([5, 3, 256, 256])
-            unseen_source_images = torch.zeros([5, 3, 224, 224])
-            unseen_captions = torch.zeros([5, self.max_length])
-            unseen_source_caption = torch.zeros([5, self.max_length])
-            unseen_attention_mask = torch.zeros([5, self.max_length])
-            unseen_source_attention_mask = torch.zeros([5, self.max_length])
-            unseen_text_img_pairs = (
-                unseen_images, unseen_source_images, unseen_captions, unseen_source_caption, unseen_attention_mask,
-                unseen_source_attention_mask)
-
         tokenized = self.clip_tokenizer(
-            texts[1:] if self.args.task == 'continuation' else texts,
+            texts[1:] if self.args.task == 'continuation' or self.args.use_reference_image else texts,
             padding="max_length",
             max_length=self.max_length,
             truncation=False,
@@ -402,39 +413,23 @@ class StoryDataset(Dataset):
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
 
-        if self.args.contrastive:
-            positive_texts = self.get_positive_samples(texts=texts)
-            negative_texts = self.get_negative_samples(story=unseen_story)
-
-            # Concatenate positive and negative samples
-            contrastive_texts = [positive_texts] + [negative_texts]
-            contrastive_texts = [item for sublist in contrastive_texts for item in sublist]
-
-            # Tokenize contrastive texts
-            contrastive_tokenized = self.clip_tokenizer(
-                contrastive_texts,
-                padding="max_length",
-                max_length=self.max_length,
-                truncation=False,
-                return_tensors="pt",
-            )
-            contrastive_captions, contrastive_attention_mask = contrastive_tokenized['input_ids'], contrastive_tokenized[
-                'attention_mask']
-        else:
-            contrastive_captions = torch.zeros([5, self.max_length])
-            contrastive_attention_mask = torch.zeros([5, self.max_length])
-
         return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
-            unseen_flags, contrastive_captions, contrastive_attention_mask, unseen_text_img_pairs
+            unseen_flags, self.pos_neg_tags
 
 
     def __len__(self):
         seen_train_len = len(self.seen_train_indexes)
         seen_test_len = len(self.seen_test_indexes)
-        unseen_train_len = len(self.unseen_train)
+        if isinstance(self.unseen_train, dict):
+            counter = 0
+            for k, v in self.unseen_train.items():
+                counter += len(v)
+            unseen_train_len = counter
+        else:
+            unseen_train_len = len(self.unseen_train)
         unseen_test_len = len(self.unseen_test)
         if self.subset == 'train':
-            return seen_train_len
+            return seen_train_len + unseen_train_len
         elif self.subset == 'test_unseen':
             if self.early_stop and unseen_test_len > self.early_stop:
                 return self.early_stop
@@ -493,12 +488,12 @@ class CustomStory(StoryDataset):
         return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts
 
 
-@hydra.main(config_path="..", config_name="config-debug")
+@hydra.main(config_path="../config", config_name="config-debug")
 def test_case(args):
     pl.seed_everything(args.seed)
 
     story_dataset = StoryDataset('train', args=args)
-    story_dataloader = DataLoader(story_dataset, batch_size=1, shuffle=False, num_workers=0)
+    story_dataloader = DataLoader(story_dataset, batch_size=1, shuffle=True, num_workers=0)
 
     for batch in tqdm(story_dataloader):
         _ = batch
