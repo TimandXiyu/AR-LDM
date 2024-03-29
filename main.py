@@ -135,7 +135,8 @@ class ARLDM(pl.LightningModule):
             block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
             self.inception = InceptionV3([block_idx])
 
-        # dino_net = torch.hub.load('facebookresearch/dino:main', 'dino_vitb8')
+        if args.distillation != 0:
+            self.teacher_model = None
         self.clip_tokenizer = CLIPTokenizer.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="tokenizer")
         self.blip_tokenizer = init_tokenizer()
         # init clip and blip tokenizers same as dataloader to get the token id for unseen chars
@@ -325,14 +326,6 @@ class ARLDM(pl.LightningModule):
         }
         return optim_dict
 
-    def frame_shuffler(self, flattened_images, B, V):
-        images = flattened_images.view(B, V, -1)
-        permutations = torch.stack([torch.randperm(V) for _ in range(B)])
-        shuffled_images = torch.gather(images, 1, permutations.unsqueeze(-1).expand(-1, -1, images.shape[-1]))
-        shuffled_flattened_images = shuffled_images.view(-1, images.shape[-1])
-
-        return shuffled_flattened_images
-
     def forward(self, batch):
         if self.args.freeze_clip and hasattr(self, "text_encoder"):
             self.text_encoder.eval()
@@ -360,7 +353,22 @@ class ARLDM(pl.LightningModule):
         # num_rows = len(ref_pos_net_tags[0])
         # ref_pos_net_tags = [[col[i] for col in ref_pos_net_tags] for i in range(num_rows)]
 
-        shuffled_images = self.frame_shuffler(images, B, V)
+        # generate random indexes to permute
+        if self.args.num_permute > 0:
+            _tmp = unseen_flag[0]
+            # if _tmp contains both True and False
+            if any(_tmp) and not all(_tmp):
+                for _ in range(self.args.num_permute):
+                    assert B >= 2, "Batch size cannot be smaller than 2"
+                    stories = np.random.choice(B, 2, replace=False)
+                    rand1 = np.random.randint(stories[0] * V, stories[0] * V + V)
+                    rand2 = np.random.randint(stories[1] * V, stories[1] * V + V)
+                    images[rand1], images[rand2] = images[rand2], images[rand1]
+                    captions[rand1], captions[rand2] = captions[rand2], captions[rand1]
+                    attention_mask[rand1], attention_mask[rand2] = attention_mask[rand2], attention_mask[rand1]
+                    source_images[rand1], source_images[rand2] = source_images[rand2], source_images[rand1]
+                    source_caption[rand1], source_caption[rand2] = source_caption[rand2], source_caption[rand1]
+                    source_attention_mask[rand1], source_attention_mask[rand2] = source_attention_mask[rand2], source_attention_mask[rand1]
 
         classifier_free_idx = np.random.rand(B * V) < 0.1
 
@@ -407,6 +415,15 @@ class ARLDM(pl.LightningModule):
 
         noise_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states, attention_mask).sample
         loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
+
+        if self.args.distillation and self.teacher_model is not None:
+            with torch.no_grad():
+                teacher_noise_pred = self.teacher_model.unet(noisy_latents, timesteps, encoder_hidden_states,
+                                                             attention_mask).sample
+            seen_pred = noise_pred
+            distill_loss = F.mse_loss(seen_pred, teacher_noise_pred, reduction='none').mean() * self.args.distillation
+            # print("Distillation loss:", distill_loss.item())
+            loss += distill_loss
         return loss
 
     def sample(self, batch):
@@ -699,6 +716,13 @@ def train_unseen(args: DictConfig) -> None:
 
     logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
 
+    if args.distillation != 0:
+        teacher_model = ARLDM.load_from_checkpoint(args.test_model_file, args=args, strict=False)
+        teacher_model.eval()
+        for param in teacher_model.parameters():
+            param.requires_grad = False
+        model.teacher_model = teacher_model
+
     model.text_emb_resize(model.ada_clip_tokenizer_len, model.ada_blip_tokenizer_len)
 
     if args.use_reference_image:
@@ -714,13 +738,12 @@ def train_unseen(args: DictConfig) -> None:
         dirpath=os.path.join(args.ckpt_dir, args.run_name),
         save_top_k=-1,
         every_n_epochs=args.save_freq,
-        filename='{epoch}-',
+        filename='{epoch}',
         save_weights_only=True
     )
     lr_monitor = LearningRateMonitor(logging_interval='step')
     callback_list = [lr_monitor, checkpoint_callback]
     trainer = pl.Trainer(
-        accumulate_grad_batches=args.grad_accumulation_steps,
         accelerator='gpu',
         devices=args.gpu_ids,
         max_epochs=args.max_epochs,
@@ -786,7 +809,7 @@ def test_unseen(args: DictConfig) -> None:
 
             local_rank = predictor.local_rank
 
-            time_delay = int(local_rank) * 5
+            time_delay = int(local_rank) * 2
             time.sleep(time_delay)
             print(f"Rank: {local_rank} is waiting for {time_delay} sec to begin saving images and texts!")
 
@@ -826,7 +849,7 @@ def test_unseen(args: DictConfig) -> None:
                 text_path = os.path.join(img_folder_name, 'texts.json')
                 with open(text_path, 'w') as f:
                     json.dump(story, f, indent=4)
-    time.sleep(30)
+    time.sleep(10)
 
 def test_seen(args: DictConfig) -> None:
     target_chars = args.get(args.dataset).target_chars
@@ -930,7 +953,7 @@ def custom_unseen(args: DictConfig) -> None:
                 image.save(image_path)
 
 
-@hydra.main(config_path="./config", config_name="config")
+@hydra.main(config_path="./config", config_name="config-test")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)

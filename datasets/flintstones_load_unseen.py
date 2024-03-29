@@ -279,8 +279,7 @@ class StoryDataset(Dataset):
                         reference_img = np.load(reference_img)
                         reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]
                         reference_text = self.cur_char
-                    images = [reference_img] + images
-                    texts = [reference_text] + texts
+
 
             else:
                 unseen_story = self.unseen_train[index - len(self.seen_train_indexes)]
@@ -329,10 +328,6 @@ class StoryDataset(Dataset):
                 else:
                     reference_img = torch.empty(128, 128, 3)
                     reference_text = ''
-                if self.args.use_reference_image:
-                    images = [reference_img] + images
-                    texts = [reference_text] + texts
-                    self.pos_neg_tags = ['refer'] + 5 * ['gt']
 
         elif self.subset == 'test_seen':
             index = self.seen_test_indexes[index]
@@ -382,11 +377,6 @@ class StoryDataset(Dataset):
                 reference_img = np.load(reference_img)
                 reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]
                 reference_text = self.nominal_name_mapping[self.cur_char][2]
-            else:
-                reference_img = torch.empty(1, 3, 224, 224)
-                reference_text = torch.empty(1, self.max_length)
-            images = [reference_img] + images if self.args.use_reference_image else images
-            texts = [reference_text] + texts if self.args.use_reference_image else texts
         else:
             raise ValueError("subset must be either train, test_seen, or test_unseen")
 
@@ -414,7 +404,7 @@ class StoryDataset(Dataset):
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
 
         return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
-            unseen_flags, self.pos_neg_tags
+            unseen_flags, reference_img, reference_text, self.pos_neg_tags
 
 
     def __len__(self):

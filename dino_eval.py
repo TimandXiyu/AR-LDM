@@ -11,7 +11,7 @@ import hydra
 CUDA="cuda:0"
 
 def get_dino_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_200ep_forzenclipblip_refer"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_distill=0.25"
 
     dino_net = torch.hub.load('facebookresearch/dino:main', 'dino_vits16')
     dino_net = dino_net.to(CUDA)
@@ -59,7 +59,7 @@ def get_dino_metrics(args: DictConfig) -> None:
                 cosine_distances[ckpt_dir].append(cosine_distance)
 
     # Save the cosine distances as a CSV file
-    csv_file = "cos_scores/oneshot_training_descriptive_text_ver2_frozenclipblip_refer.csv"
+    csv_file = "cos_scores/test.csv"
     df = pd.DataFrame.from_dict(cosine_distances, orient='index', columns=["0"])
     df.index.name = 'Character'
     os.makedirs(os.path.dirname(csv_file), exist_ok=True)

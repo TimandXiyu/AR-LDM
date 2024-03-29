@@ -22,7 +22,7 @@ import csv
 import pandas as pd
 from tqdm import tqdm
 
-CUDA="cuda:0"
+CUDA="cuda:2"
 
 
 def get_metrics_singdir(args: DictConfig) -> None:
@@ -54,7 +54,7 @@ def get_metrics_singdir(args: DictConfig) -> None:
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_200ep_forzenclipblip_SAMPLINGrefer"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_distill=0.25"
 
     evaluator = Evaluation(args)
     fid_scores = {}
@@ -94,7 +94,7 @@ def get_metrics(args: DictConfig) -> None:
                 fid_scores[ckpt_dir].append(fid)
 
     # Save the FID scores as a CSV file
-    csv_file = "fid_scores/oneshot_training_descriptive_text_ver2_frozenclipblip.csv"
+    csv_file = "fid_scores/test.csv"
     df = pd.DataFrame.from_dict(fid_scores, orient='index', columns=["0"])
     df.index.name = 'Character'
 
@@ -103,7 +103,7 @@ def get_metrics(args: DictConfig) -> None:
     print(f"FID scores saved to {csv_file}")
 
 def get_unifed_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_200ep_forzenclipblip"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_distill=0.25"
 
     evaluator = Evaluation(args)
 
@@ -121,9 +121,9 @@ def get_unifed_metrics(args: DictConfig) -> None:
                     original_images = []
                     generated_images = []
                     for img_file in os.listdir(story_pth):
-                        if img_file.endswith("_original_eval.png") or img_file.endswith("_original.png"):
+                        if img_file.endswith("_original_eval.png") :
                             original_images.append(os.path.join(story_pth, img_file))
-                        elif img_file.endswith("_generated_eval.png") or img_file.endswith("_generated.png"):
+                        elif img_file.endswith("_generated_eval.png"):
                             generated_images.append(os.path.join(story_pth, img_file))
 
                     if original_images and generated_images:
