@@ -238,6 +238,7 @@ class StoryDataset(Dataset):
 
         self.pos_neg_tags = []
         self.pos_neg_tags_map = {'refer': 0, 'gt': 1, 'else': 2}
+        self.refer_char = None
 
     def __getitem__(self, index):
         if self.subset == 'train':
@@ -256,31 +257,22 @@ class StoryDataset(Dataset):
                 if self.args.use_reference_image:
                     known_chars = self.args.get(self.dataset).new_tokens
                     self.avail_chars = []
-                    self.cur_char = None
                     for t in texts:
+                        local_char = []
                         for char in known_chars:
                             if char.lower() in t.lower():
                                 self.avail_chars.append(char)
-                    # randomly select a character from the available characters
-                    self.cur_char = random.choice(self.avail_chars)
-                    # identify frames that has the current character
-                    self.pos_neg_tags = ['refer']
-                    for t in texts:
-                        if self.cur_char.lower() in t.lower():
-                            self.pos_neg_tags.append('gt')
-                        else:
-                            self.pos_neg_tags.append('else')
-                    if not self.cur_char:
+                                local_char.append(char)
+                    self.refer_char = random.choice(self.avail_chars)
+                    if not self.refer_char:
                         reference_img = torch.zeros(128, 128, 3)
-                        reference_text = ''
                     else:
-                        reference_img = self.reference_img[self.cur_char]
+                        reference_img = self.reference_img[self.refer_char]
                         reference_img = os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(reference_img))
                         reference_img = np.load(reference_img)
                         reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]
-                        reference_text = self.cur_char
-
-
+                else:
+                    reference_img = torch.empty(3, 128, 128)
             else:
                 unseen_story = self.unseen_train[index - len(self.seen_train_indexes)]
                 images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in unseen_story]
@@ -324,10 +316,10 @@ class StoryDataset(Dataset):
                     reference_img = os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(reference_img))
                     reference_img = np.load(reference_img)
                     reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]
-                    reference_text = self.nominal_name_mapping[self.cur_char][2]
+                    self.refer_char = self.cur_char
                 else:
-                    reference_img = torch.empty(128, 128, 3)
-                    reference_text = ''
+                    reference_img = torch.empty(3, 128, 128)
+                    self.refer_char = ''
 
         elif self.subset == 'test_seen':
             index = self.seen_test_indexes[index]
@@ -370,23 +362,18 @@ class StoryDataset(Dataset):
                             texts.append(self.descriptions[id])
             else:
                 texts = [self.descriptions[i] for i in unseen_story]
-            if self.args.use_reference_image:
-                reference_img = self.reference_img[self.cur_char]
-                # load image from .npy file
-                reference_img = os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(reference_img))
-                reference_img = np.load(reference_img)
-                reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]
-                reference_text = self.nominal_name_mapping[self.cur_char][2]
+            self.refer_char = ''
+            reference_img = torch.zeros(3, 128, 128)
         else:
             raise ValueError("subset must be either train, test_seen, or test_unseen")
 
         source_images = torch.stack([self.blip_image_processor(im) for im in images])
-        images = images[1:] if self.args.task == 'continuation' or self.args.use_reference_image else images
+        images = images[1:] if self.args.task == 'continuation' else images
         images = torch.stack([self.augment(im) for im in images]) \
             if self.subset in ['train', 'val','train_unseen'] else torch.from_numpy(np.array(images))
 
         tokenized = self.clip_tokenizer(
-            texts[1:] if self.args.task == 'continuation' or self.args.use_reference_image else texts,
+            texts[1:] if self.args.task == 'continuation' else texts,
             padding="max_length",
             max_length=self.max_length,
             truncation=False,
@@ -403,9 +390,11 @@ class StoryDataset(Dataset):
         )
         source_caption, source_attention_mask = tokenized['input_ids'], tokenized['attention_mask']
 
-        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
-            unseen_flags, reference_img, reference_text, self.pos_neg_tags
+        # if reference img is not empty
+        reference_img = self.augment(reference_img)
 
+        return images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
+            unseen_flags, reference_img, self.refer_char
 
     def __len__(self):
         seen_train_len = len(self.seen_train_indexes)
@@ -482,7 +471,7 @@ class CustomStory(StoryDataset):
 def test_case(args):
     pl.seed_everything(args.seed)
 
-    story_dataset = StoryDataset('train', args=args)
+    story_dataset = StoryDataset('test_unseen', args=args)
     story_dataloader = DataLoader(story_dataset, batch_size=1, shuffle=True, num_workers=0)
 
     for batch in tqdm(story_dataloader):

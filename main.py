@@ -101,22 +101,26 @@ class ARLDM(pl.LightningModule):
         self.args = args
         self.steps_per_epoch = int(steps_per_epoch)
         self.nominal_name_mapping = json.load(open(os.path.join(args.get(args.dataset).data_dir, 'char_name_mapping.json'), 'r'))
+        self.known_chars = args.get(args.dataset).new_tokens
         """
             Configurations
         """
         self.task = args.task
-        # self.netD = nn.Sequential(
-        #     nn.Conv2d(4, 64, kernel_size=4, stride=2, padding=1),
-        #     nn.LeakyReLU(0.2),
-        #     nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
-        #     nn.BatchNorm2d(128),
-        #     nn.LeakyReLU(0.2),
-        #     nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),
-        #     nn.BatchNorm2d(256),
-        #     nn.LeakyReLU(0.2),
-        #     nn.Conv2d(256, 1, kernel_size=4, stride=1, padding=0),
-        #     nn.Sigmoid()
-        # )
+        if self.args.adversarial != 0:
+            self.netD = nn.Sequential(
+                nn.Conv2d(8, 64, kernel_size=3, stride=1, padding=1),
+                nn.LeakyReLU(0.2),
+                nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(128),
+                nn.LeakyReLU(0.2),
+                nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(256),
+                nn.LeakyReLU(0.2),
+                nn.AdaptiveAvgPool2d((1, 1)),
+                nn.Flatten(),
+                nn.Linear(256, 1),
+                nn.Sigmoid()
+            )
 
         if args.mode == 'sample' or args.mode == 'custom_unseen' or args.mode == 'test_unseen' or args.mode == 'test_seen':
             if args.scheduler == "pndm":
@@ -204,7 +208,7 @@ class ARLDM(pl.LightningModule):
         self.unet = UNet2DConditionModel.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="unet", tuning=args.unet_model.tuning, low_cpu_mem_usage=args.unet_model.low_cpu_mem_usage)
         if args.inject_lora:
             self.unet.requires_grad_(False)
-            self.unet_lora_params, self.train_names = inject_trainable_lora(self.unet, r=16, scale=0.1)
+            self.unet_lora_params, self.train_names = inject_trainable_lora(self.unet, r=32, scale=0.1)
         self.noise_scheduler = DDPMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
                                              num_train_timesteps=1000)
 
@@ -273,15 +277,76 @@ class ARLDM(pl.LightningModule):
     def resize_time_embeddings(self, num_time_steps):
         self.time_embeddings = nn.Embedding(num_time_steps, 768)
 
-    # def adversarial_diffusion(self, latent, noisy_latent, timesteps, tags):
-    #     """
-    #     Pick positive and negative pairs, generate a label set, feed them to the Dnet.
-    #     """
-    #     pass
-    #
-    # def estimate_x0(self, xt, t):
-    #     # estimate x0 using DDIM
-    #     pass
+    def adversarial_diffusion(self, images, latent, noisy_latent, noise_pred, timesteps, refer_char, refer_img, texts):
+        """
+        Pick positive and negative pairs, generate a label set, feed them to the Dnet.
+        When batchsize == 2:
+            latent: [10, 4, 32, 32]
+            noisy_latent: [10, 4, 32, 32]
+            timesteps: [10]
+            refer_char: ['A', 'B']
+            refer_img: [2, 3, 256, 256]
+            texts: list of list of texts
+        """
+        refer_latent = self.vae.encode(refer_img).latent_dist.sample() * 0.18215
+        B, V = 2, 5
+        texts = [item for sublist in texts for item in sublist]
+        pos_samples = []
+        neg_samples = []
+        refer_latents = []
+
+        for i in range(B * V):
+            if refer_char[i // V] in texts[i].lower():
+                pos_samples.append(latent[i])
+                neg_samples.append(self.estimate_x0(noisy_latent[i].unsqueeze(0), noise_pred[i].unsqueeze(0),
+                                                    timesteps[i].unsqueeze(0)))
+                refer_latents.append(refer_latent[i // V])
+
+        if len(pos_samples) > 0:
+            pos_samples = torch.stack(pos_samples)
+            neg_samples = torch.cat(neg_samples)
+            refer_latents = torch.stack(refer_latents)
+
+            # Concatenate the reference latent to positive and negative samples
+            pos_samples = torch.cat([pos_samples, refer_latents], dim=1)
+            neg_samples = torch.cat([neg_samples, refer_latents], dim=1)
+
+            # Pass samples through discriminator
+            pos_preds = self.netD(pos_samples)
+            neg_preds = self.netD(neg_samples)
+
+            # Create labels for positive and negative samples
+            pos_labels = torch.ones_like(pos_preds)
+            neg_labels = torch.zeros_like(neg_preds)
+
+            # Calculate binary cross-entropy loss for discriminator
+            pos_loss = F.binary_cross_entropy(pos_preds, pos_labels)
+            neg_loss = F.binary_cross_entropy(neg_preds, neg_labels)
+            d_loss = pos_loss + neg_loss
+
+            # Log the accuracy
+            pos_acc = ((pos_preds > 0.5).float().mean())
+            neg_acc = ((neg_preds < 0.5).float().mean())
+            self.log('pos_acc', pos_acc, prog_bar=True)
+            self.log('neg_acc', neg_acc, prog_bar=True)
+
+            g_adv_loss = F.binary_cross_entropy(neg_preds, torch.ones_like(neg_preds))
+        else:
+            d_loss = torch.tensor(0.0).to(self.device)
+            g_adv_loss = torch.tensor(0.0).to(self.device)
+        return d_loss, g_adv_loss
+
+    def adv_loss(self, y_hat, y):
+        return F.binary_cross_entropy(y_hat, y)
+
+    def estimate_x0(self, xt, pred, t):
+        # estimate x0 using DDIM
+        alpha_prod_t = self.noise_scheduler.alphas_cumprod[t]
+        beta_prod_t = 1 - alpha_prod_t
+
+        x0_pred = (xt - beta_prod_t ** 0.5 * pred) / alpha_prod_t ** (0.5)
+
+        return x0_pred
 
     @staticmethod
     def freeze_params(params):
@@ -317,6 +382,30 @@ class ARLDM(pl.LightningModule):
         scheduler = LinearWarmupCosineAnnealingLR(optimizer,
                                                   warmup_epochs=warm_up_steps,
                                                   max_epochs=max_step)
+        if self.adversarial != 0:
+            optimizer_D = torch.optim.AdamW(self.netD.parameters(),
+                                            lr=self.args.discriminator_lr,
+                                            weight_decay=1e-4)
+            scheduler_D = LinearWarmupCosineAnnealingLR(optimizer_D,
+                                                        warmup_epochs=warm_up_steps,
+                                                        max_epochs=max_step)
+            optim_dict = [
+                {
+                    'optimizer': optimizer,
+                    'lr_scheduler': {
+                        'scheduler': scheduler,
+                        'interval': 'step',
+                    }
+                },
+                {
+                    'optimizer': optimizer_D,
+                    'lr_scheduler': {
+                        'scheduler': scheduler_D,
+                        'interval': 'step',
+                    }
+                }
+            ]
+            return optim_dict
         optim_dict = {
             'optimizer': optimizer,
             'lr_scheduler': {
@@ -332,7 +421,7 @@ class ARLDM(pl.LightningModule):
         if self.args.freeze_blip and hasattr(self, "mm_encoder"):
             self.mm_encoder.eval()
         images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
-           unseen_flag, ref_pos_net_tags = batch
+           unseen_flag, refer_img, refer_char = batch
         """
         images: [B, V, 3, H, W]
         captions: [B, V, S]
@@ -343,32 +432,35 @@ class ARLDM(pl.LightningModule):
         texts: [B, V, S]
         """
         B, V, S = captions.shape
-        src_V = V + 1 if self.task == 'continuation' or self.args.use_reference_image else V
+        src_V = V + 1 if self.task == 'continuation' else V
         images = torch.flatten(images, 0, 1)
         captions = torch.flatten(captions, 0, 1)
         attention_mask = torch.flatten(attention_mask, 0, 1)
         source_images = torch.flatten(source_images, 0, 1)
         source_caption = torch.flatten(source_caption, 0, 1)
         source_attention_mask = torch.flatten(source_attention_mask, 0, 1)
-        # num_rows = len(ref_pos_net_tags[0])
-        # ref_pos_net_tags = [[col[i] for col in ref_pos_net_tags] for i in range(num_rows)]
+        num_rows = len(texts[0])
+        texts = [[col[i] for col in texts] for i in range(num_rows)]
 
         # generate random indexes to permute
         if self.args.num_permute > 0:
             _tmp = unseen_flag[0]
-            # if _tmp contains both True and False
+            # get the index of true and false element
+            idx_true = [i for i, x in enumerate(_tmp) if x]
+            idx_false = [i for i, x in enumerate(_tmp) if not x]
             if any(_tmp) and not all(_tmp):
                 for _ in range(self.args.num_permute):
                     assert B >= 2, "Batch size cannot be smaller than 2"
-                    stories = np.random.choice(B, 2, replace=False)
-                    rand1 = np.random.randint(stories[0] * V, stories[0] * V + V)
-                    rand2 = np.random.randint(stories[1] * V, stories[1] * V + V)
-                    images[rand1], images[rand2] = images[rand2], images[rand1]
-                    captions[rand1], captions[rand2] = captions[rand2], captions[rand1]
-                    attention_mask[rand1], attention_mask[rand2] = attention_mask[rand2], attention_mask[rand1]
-                    source_images[rand1], source_images[rand2] = source_images[rand2], source_images[rand1]
-                    source_caption[rand1], source_caption[rand2] = source_caption[rand2], source_caption[rand1]
-                    source_attention_mask[rand1], source_attention_mask[rand2] = source_attention_mask[rand2], source_attention_mask[rand1]
+                    seen_story = np.random.choice(idx_true, 1, replace=False)
+                    unseen_story = np.random.choice(idx_false, 1, replace=False)
+                    seen_img_idx = np.random.randint(seen_story * V, seen_story * V + V)
+                    unseen_img_idx = np.random.randint(unseen_story * V, unseen_story * V + V)
+                    images[unseen_img_idx] = images[seen_img_idx]
+                    captions[unseen_img_idx] = captions[seen_img_idx]
+                    attention_mask[unseen_img_idx] = attention_mask[seen_img_idx]
+                    source_images[unseen_img_idx] = source_images[seen_img_idx]
+                    source_caption[unseen_img_idx] = source_caption[seen_img_idx]
+                    source_attention_mask[unseen_img_idx] = source_attention_mask[seen_img_idx]
 
         classifier_free_idx = np.random.rand(B * V) < 0.1
 
@@ -412,8 +504,8 @@ class ARLDM(pl.LightningModule):
         bsz = latents.shape[0]
         timesteps = torch.randint(0, self.noise_scheduler.num_train_timesteps, (bsz,), device=self.device).long()
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
-
         noise_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states, attention_mask).sample
+        loss_D = self.adversarial_diffusion(images, latents, noisy_latents, noise_pred, timesteps, refer_char, refer_img, texts)
         loss = F.mse_loss(noise_pred, noise, reduction="none").mean([1, 2, 3]).mean()
 
         if self.args.distillation and self.teacher_model is not None:
@@ -428,7 +520,7 @@ class ARLDM(pl.LightningModule):
 
     def sample(self, batch):
         original_images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
-            unseen_flag, ref_pos_neg_tags = batch
+            unseen_flag, refer_img, refer_text = batch
         B, V, S = captions.shape
         src_V = V + 1 if self.task == 'continuation' or self.args.use_reference_image else V
         original_images = torch.flatten(original_images, 0, 1)
@@ -621,7 +713,7 @@ class ARLDM(pl.LightningModule):
 def train(args: DictConfig) -> None:
     dataloader = LightningDataset(args)
     dataloader.setup('fit')
-    model = ARLDM(args, steps_per_epoch=dataloader.get_length_of_train_dataloader() / len(args.gpu_ids))
+    model = ARLDM(args, steps_per_epoch=dataloader.get_length_of_train_dataloader())
 
     logger = TensorBoardLogger(save_dir=os.path.join(args.ckpt_dir, args.run_name), name='log', default_hp_metric=False)
 
@@ -725,8 +817,8 @@ def train_unseen(args: DictConfig) -> None:
 
     model.text_emb_resize(model.ada_clip_tokenizer_len, model.ada_blip_tokenizer_len)
 
-    if args.use_reference_image:
-        model.resize_time_embeddings(6)
+    # if args.use_reference_image:
+    #     model.resize_time_embeddings(6)
 
     seen_chars = args.get(args.dataset).new_tokens
     for char in seen_chars:
@@ -953,7 +1045,7 @@ def custom_unseen(args: DictConfig) -> None:
                 image.save(image_path)
 
 
-@hydra.main(config_path="./config", config_name="config-test")
+@hydra.main(config_path="./config", config_name="config")
 def main(args: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     pl.seed_everything(args.seed)

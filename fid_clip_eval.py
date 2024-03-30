@@ -54,7 +54,7 @@ def get_metrics_singdir(args: DictConfig) -> None:
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_distill=0.25"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_freezeUnet_distill=0.25"
 
     evaluator = Evaluation(args)
     fid_scores = {}
@@ -103,7 +103,7 @@ def get_metrics(args: DictConfig) -> None:
     print(f"FID scores saved to {csv_file}")
 
 def get_unifed_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_distill=0.25"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_freezeUnet_distill=0.1"
 
     evaluator = Evaluation(args)
 
@@ -121,9 +121,9 @@ def get_unifed_metrics(args: DictConfig) -> None:
                     original_images = []
                     generated_images = []
                     for img_file in os.listdir(story_pth):
-                        if img_file.endswith("_original_eval.png") :
+                        if img_file.endswith("_original_eval.png") or img_file.endswith("_original.png"):
                             original_images.append(os.path.join(story_pth, img_file))
-                        elif img_file.endswith("_generated_eval.png"):
+                        elif img_file.endswith("_generated_eval.png") or img_file.endswith("_generated.png"):
                             generated_images.append(os.path.join(story_pth, img_file))
 
                     if original_images and generated_images:
@@ -171,8 +171,8 @@ def main(args: DictConfig) -> None:
     if args.num_cpu_cores > 0:
         torch.set_num_threads(args.num_cpu_cores)
 
-    # get_metrics(args)
-    get_unifed_metrics(args)
+    get_metrics(args)
+    # get_unifed_metrics(args)
     # get_metrics_singdir(args)
 
 if __name__ == '__main__':
