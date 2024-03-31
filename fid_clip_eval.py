@@ -54,7 +54,7 @@ def get_metrics_singdir(args: DictConfig) -> None:
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_freezeUnet_distill=0.25"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_distill=0.5"
 
     evaluator = Evaluation(args)
     fid_scores = {}

@@ -58,12 +58,12 @@ class StoryDataset(Dataset):
         if self.subset == "train":
             self.rand = Random()
             self.rand.seed(0)
-            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 32)
+            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 33)
             self.seen_test_indexes = list(range(self.seen_len["test"]))
         else:
             self.rand = Random()
             self.rand.seed(0)
-            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 32)
+            self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 33)
             self.seen_test_indexes = list(range(self.seen_len["test"]))
 
         self.unseen_char = dict()
@@ -312,11 +312,14 @@ class StoryDataset(Dataset):
                     texts = [self.descriptions[i] for i in unseen_story]
 
                 if self.args.use_reference_image:
-                    reference_img = self.reference_img[self.cur_char]
+                    reference_img = self.new_followings[self.cur_char]
+                    reference_img = [item for sublist in reference_img.values() for item in sublist]
+                    reference_img = random.choice(reference_img)
+
                     reference_img = os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(reference_img))
                     reference_img = np.load(reference_img)
                     reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]
-                    self.refer_char = self.cur_char
+                    self.refer_char = self.nominal_name_mapping[self.cur_char][2]
                 else:
                     reference_img = torch.empty(3, 128, 128)
                     self.refer_char = ''
@@ -471,7 +474,7 @@ class CustomStory(StoryDataset):
 def test_case(args):
     pl.seed_everything(args.seed)
 
-    story_dataset = StoryDataset('test_unseen', args=args)
+    story_dataset = StoryDataset('train', args=args)
     story_dataloader = DataLoader(story_dataset, batch_size=1, shuffle=True, num_workers=0)
 
     for batch in tqdm(story_dataloader):

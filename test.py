@@ -196,7 +196,7 @@ class GAN(L.LightningModule):
         self.manual_backward(d_loss)
         optimizer_d.step()
         optimizer_d.zero_grad()
-        self.untoggle_optimizer(optimizer_d, 1)
+        self.untoggle_optimizer(1)
 
     def configure_optimizers(self):
         lr = self.hparams.lr
@@ -222,6 +222,6 @@ if __name__ == "__main__":
     trainer = L.Trainer(
         accelerator="auto",
         devices=1,
-        max_epochs=5,
+        max_epochs=100,
     )
     trainer.fit(model, dm)
