@@ -24,7 +24,6 @@ from diffusers.modeling_utils import ModelMixin
 from diffusers.models.embeddings import ImagePositionalEmbeddings
 from diffusers.utils import BaseOutput
 from diffusers.utils.import_utils import is_xformers_available
-import loralib as lora
 
 
 @dataclass
@@ -468,14 +467,6 @@ class CrossAttention(nn.Module):
             self.to_q = nn.Linear(query_dim, inner_dim, bias=bias)
             self.to_k = nn.Linear(cross_attention_dim, inner_dim, bias=bias)
             self.to_v = nn.Linear(cross_attention_dim, inner_dim, bias=bias)
-        elif tuning == 'lora':
-            assert lora_mode is not None, 'lora mode must be specified'
-            if 'q' in lora_mode:
-                self.to_q = lora.Linear(query_dim, inner_dim, bias=bias, r=16)
-            if 'k' in lora_mode:
-                self.to_k = lora.Linear(cross_attention_dim, inner_dim, bias=bias, r=16)
-            if 'v' in lora_mode:
-                self.to_v = lora.Linear(cross_attention_dim, inner_dim, bias=bias, r=16)
 
         self.to_out = nn.ModuleList([])
         self.to_out.append(nn.Linear(inner_dim, query_dim))

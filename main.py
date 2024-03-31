@@ -26,7 +26,6 @@ from fid_utils import calculate_fid_given_features
 from models.blip_override.blip import blip_feature_extractor, init_tokenizer
 from models.diffusers_override.unet_2d_condition import UNet2DConditionModel
 from models.inception import InceptionV3
-from lora_diffusion import inject_trainable_lora
 import itertools
 import json
 from einops import rearrange
@@ -204,9 +203,6 @@ class ARLDM(pl.LightningModule):
             image_size=224, vit='large')
         self.vae = AutoencoderKL.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="vae")
         self.unet = UNet2DConditionModel.from_pretrained('runwayml/stable-diffusion-v1-5', subfolder="unet", tuning=args.unet_model.tuning, low_cpu_mem_usage=args.unet_model.low_cpu_mem_usage)
-        if args.inject_lora:
-            self.unet.requires_grad_(False)
-            self.unet_lora_params, self.train_names = inject_trainable_lora(self.unet, r=32, scale=0.1)
         self.noise_scheduler = DDPMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear",
                                              num_train_timesteps=1000)
 
@@ -352,24 +348,14 @@ class ARLDM(pl.LightningModule):
             param.requires_grad = True
 
     def configure_optimizers(self):
-        if self.args.inject_lora:
-            param_groups = [
-                {"params": itertools.chain(*self.unet_lora_params), "lr": 3e-4},
-                {"params": self.text_encoder.parameters(), "lr": 1e-5},
-                {"params": self.mm_encoder.parameters(), "lr": 1e-5}
-            ]
-            optimizer = torch.optim.AdamW(param_groups,
-                                          lr=self.args.init_lr,
-                                          weight_decay=1e-4)
-        else:
-            param_groups = [
-                {"params": self.unet.parameters(), "lr": 1e-5},
-                {"params": self.text_encoder.parameters(), "lr": 1e-5},
-                {"params": self.mm_encoder.parameters(), "lr": 1e-5}
-            ]
-            optimizer = torch.optim.AdamW(param_groups,
-                                         lr=self.args.init_lr,
-                                         weight_decay=1e-4)
+        param_groups = [
+            {"params": self.unet.parameters(), "lr": 1e-5},
+            {"params": self.text_encoder.parameters(), "lr": 1e-5},
+            {"params": self.mm_encoder.parameters(), "lr": 1e-5}
+        ]
+        optimizer = torch.optim.AdamW(param_groups,
+                                     lr=self.args.init_lr,
+                                     weight_decay=1e-4)
         warm_up_steps = self.args.warmup_epochs * self.steps_per_epoch / self.args.grad_accumulation_steps
         max_step = self.args.max_epochs * self.steps_per_epoch / self.args.grad_accumulation_steps
         scheduler = LinearWarmupCosineAnnealingLR(optimizer,
@@ -757,7 +743,7 @@ def train(args: DictConfig) -> None:
         precision=16,
         num_sanity_val_steps=0,
         gradient_clip_val=1.0,
-        limit_val_batches=0.0,
+        limit_val_batches=0.0
     )
     trainer.fit(model, dataloader, ckpt_path=args.train_model_file)
 
@@ -854,16 +840,17 @@ def train_unseen(args: DictConfig) -> None:
     callback_list = [lr_monitor, checkpoint_callback]
     trainer = pl.Trainer(
         accelerator='gpu',
-        devices=2,
+        devices=args.gpu_ids,
         max_epochs=args.max_epochs,
         benchmark=True,
         logger=logger,
         log_every_n_steps=1,
         callbacks=callback_list,
-        strategy=DDPStrategy(find_unused_parameters=True),
         num_sanity_val_steps=0,
+        strategy=DDPStrategy(find_unused_parameters=True),
         limit_val_batches=0.0,
-        precision=32
+        precision=32,
+        limit_train_batches=10
     )
     dataloader = LightningDataset(args)
     dataloader.setup('train')

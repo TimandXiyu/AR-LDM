@@ -54,6 +54,7 @@ class StoryDataset(Dataset):
         self.new_followings = json.load(open(os.path.join(self.data_dir, 'new_followings.json'), 'r'))
         self.seen_len = {"train": len(self.h5file['train']['text']), "test": len(self.h5file['test']['text'])}
         self.reference_img = json.load(open(os.path.join(self.data_dir, 'references_images.json'), 'r'))
+        self.np_rand = np.random.RandomState(42)
         # get 10% random samples from train and test split of the h5 file
         if self.subset == "train":
             self.rand = Random()
@@ -263,16 +264,18 @@ class StoryDataset(Dataset):
                             if char.lower() in t.lower():
                                 self.avail_chars.append(char)
                                 local_char.append(char)
-                    self.refer_char = random.choice(self.avail_chars)
+                    self.refer_char = self.np_rand.choice(self.avail_chars)
                     if not self.refer_char:
-                        reference_img = torch.zeros(128, 128, 3)
+                        reference_img = torch.zeros(3, 128, 128)
                     else:
                         reference_img = self.reference_img[self.refer_char]
+                        if isinstance(reference_img, list):
+                            reference_img = random.choice(reference_img)
                         reference_img = os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(reference_img))
                         reference_img = np.load(reference_img)
                         reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]
                 else:
-                    reference_img = torch.empty(3, 128, 128)
+                    reference_img = torch.zeros(3, 128, 128)
             else:
                 unseen_story = self.unseen_train[index - len(self.seen_train_indexes)]
                 images = [os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(path)) for path in unseen_story]
@@ -315,13 +318,12 @@ class StoryDataset(Dataset):
                     reference_img = self.new_followings[self.cur_char]
                     reference_img = [item for sublist in reference_img.values() for item in sublist]
                     reference_img = random.choice(reference_img)
-
                     reference_img = os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(reference_img))
                     reference_img = np.load(reference_img)
                     reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]
                     self.refer_char = self.nominal_name_mapping[self.cur_char][2]
                 else:
-                    reference_img = torch.empty(3, 128, 128)
+                    reference_img = torch.zeros(3, 128, 128)
                     self.refer_char = ''
 
         elif self.subset == 'test_seen':
@@ -475,10 +477,24 @@ def test_case(args):
     pl.seed_everything(args.seed)
 
     story_dataset = StoryDataset('train', args=args)
-    story_dataloader = DataLoader(story_dataset, batch_size=1, shuffle=True, num_workers=0)
+    story_dataloader = DataLoader(story_dataset, batch_size=4, shuffle=True, num_workers=4)
 
-    for batch in tqdm(story_dataloader):
-        _ = batch
+    for _ in range(100):
+        for batch in tqdm(story_dataloader):
+            # print batch contents
+            images, captions, attention_mask, source_images, source_caption, source_attention_mask, texts, index, \
+                unseen_flags, reference_img, refer_char = batch
+            # check content size
+            assert len(images) == 4
+            assert len(captions) == 4
+            assert len(attention_mask) == 4
+            assert len(source_images) == 4
+            assert len(source_caption) == 4
+            assert len(source_attention_mask) == 4
+            assert len(texts) == 5
+            assert len(unseen_flags) == 5
+            assert len(reference_img) == 4
+            assert len(refer_char) == 4
 
 
 if __name__ == "__main__":
