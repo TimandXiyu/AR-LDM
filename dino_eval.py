@@ -11,7 +11,7 @@ import hydra
 CUDA="cuda:0"
 
 def get_dino_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_distill=0.25"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_refer_v2_distill=0.5_adv=1.0_startG500_simpleDis"
 
     dino_net = torch.hub.load('facebookresearch/dino:main', 'dino_vits16')
     dino_net = dino_net.to(CUDA)
@@ -57,6 +57,11 @@ def get_dino_metrics(args: DictConfig) -> None:
                 if ckpt_dir not in cosine_distances:
                     cosine_distances[ckpt_dir] = []
                 cosine_distances[ckpt_dir].append(cosine_distance)
+
+    cos_avg = []
+    for key in cosine_distances:
+        cos_avg.append(sum(cosine_distances[key])/len(cosine_distances[key]))
+    print(f"Average Cosine Distance for all characters: {sum(cos_avg)/len(cos_avg):.4f}")
 
     # Save the cosine distances as a CSV file
     csv_file = "cos_scores/test.csv"

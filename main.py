@@ -26,9 +26,12 @@ from fid_utils import calculate_fid_given_features
 from models.blip_override.blip import blip_feature_extractor, init_tokenizer
 from models.diffusers_override.unet_2d_condition import UNet2DConditionModel
 from models.inception import InceptionV3
+from models.bigDis import BigDis, MidDis, JuniorDis
 import itertools
 import json
 from einops import rearrange
+
+
 
 
 class LightningDataset(pl.LightningDataModule):
@@ -107,17 +110,40 @@ class ARLDM(pl.LightningModule):
         """
         self.task = args.task
         if self.args.adversarial != 0:
-            self.netD = nn.Sequential(
-                nn.Conv2d(8, 64, kernel_size=3, stride=1, padding=1),
-                nn.LeakyReLU(0.2),
-                nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-                nn.BatchNorm2d(128),
-                nn.LeakyReLU(0.2),
-                nn.AdaptiveAvgPool2d((1, 1)),
-                nn.Flatten(),
-                nn.Linear(128, 1),
-                nn.Sigmoid()
-            )
+            if self.args.D_net == 'simple':
+                self.netD = nn.Sequential(
+                    nn.Conv2d(8, 64, kernel_size=3, stride=1, padding=1),
+                    nn.LeakyReLU(0.2),
+                    nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+                    nn.BatchNorm2d(128),
+                    nn.LeakyReLU(0.2),
+                    nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+                    nn.BatchNorm2d(256),
+                    nn.LeakyReLU(0.2),
+                    nn.AdaptiveAvgPool2d((1, 1)),
+                    nn.Flatten(),
+                    nn.Linear(256, 1),
+                    nn.Sigmoid()
+                )
+            elif self.args.D_net == 'big':
+                self.netD = BigDis()
+            elif self.args.D_net == 'mid':
+                self.netD = MidDis()
+            elif self.args.D_net == 'junior':
+                self.netD = JuniorDis()
+            else:
+                print("Unknown type of discriminator, using a simple discriminator instead.")
+                self.netD = nn.Sequential(
+                    nn.Conv2d(8, 64, kernel_size=3, stride=1, padding=1),
+                    nn.LeakyReLU(0.2),
+                    nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+                    nn.BatchNorm2d(128),
+                    nn.LeakyReLU(0.2),
+                    nn.AdaptiveAvgPool2d((1, 1)),
+                    nn.Flatten(),
+                    nn.Linear(128, 1),
+                    nn.Sigmoid()
+                )
 
         if args.mode == 'sample' or args.mode == 'custom_unseen' or args.mode == 'test_unseen' or args.mode == 'test_seen':
             if args.scheduler == "pndm":
@@ -272,16 +298,6 @@ class ARLDM(pl.LightningModule):
         self.time_embeddings = nn.Embedding(num_time_steps, 768)
 
     def adversarial_diffusion(self, images, latent, noisy_latent, noise_pred, timesteps, refer_char, refer_img, texts):
-        """
-        Pick positive and negative pairs, generate a label set, feed them to the Dnet.
-        When batchsize == 2:
-            latent: [10, 4, 32, 32]
-            noisy_latent: [10, 4, 32, 32]
-            timesteps: [10]
-            refer_char: ['A', 'B']
-            refer_img: [2, 3, 256, 256]
-            texts: list of list of texts
-        """
         refer_latent = self.vae.encode(refer_img).latent_dist.sample() * 0.18215
         V = 5
         B = latent.shape[0] // V
@@ -311,22 +327,38 @@ class ARLDM(pl.LightningModule):
             pos_preds = self.netD(pos_samples)
             neg_preds = self.netD(neg_samples)
 
-            pos_labels = torch.ones_like(pos_preds)
-            neg_labels = torch.zeros_like(neg_preds)
+            if self.args.D_loss_type == "hinge":
 
-            pos_loss = F.binary_cross_entropy(pos_preds, pos_labels)
-            neg_loss = F.binary_cross_entropy(neg_preds, neg_labels)
-            d_loss = pos_loss + neg_loss
+                # Hinge loss for discriminator
+                d_loss = torch.mean(F.relu(1. - pos_preds)) + torch.mean(F.relu(1. + neg_preds))
 
-            overall_acc = ((pos_preds > 0.5).float().mean() + (neg_preds < 0.5).float().mean()) / 2
-            self.log('d_acc', overall_acc, prog_bar=True)
+                # Adjusted accuracy calculation for hinge loss
+                pos_correct = (pos_preds > 0).float().mean()
+                neg_correct = (neg_preds < 0).float().mean()
+                overall_acc = (pos_correct + neg_correct) / 2
+                self.log('d_acc', overall_acc, prog_bar=True)
 
-            g_adv_loss = -torch.log(neg_preds + 1e-8).mean()
+                # Hinge loss for generator
+                g_adv_loss = -torch.mean(neg_preds)
+            elif self.args.D_loss_type == "bce":
+                pos_labels = torch.ones_like(pos_preds)
+                neg_labels = torch.zeros_like(neg_preds)
+
+                pos_loss = F.binary_cross_entropy(pos_preds, pos_labels)
+                neg_loss = F.binary_cross_entropy(neg_preds, neg_labels)
+                d_loss = pos_loss + neg_loss
+
+                overall_acc = ((pos_preds > 0.5).float().mean() + (neg_preds < 0.5).float().mean()) / 2
+                self.log('d_acc', overall_acc, prog_bar=True)
+
+                g_adv_loss = -torch.log(neg_preds + 1e-8).mean()
+            else:
+                raise ValueError("Unknown type of discriminator loss")
 
         else:
-            # sum the parameters of netD and times 0
             d_loss = torch.tensor(0.0, requires_grad=True).to(self.device)
             g_adv_loss = torch.tensor(0.0, requires_grad=True).to(self.device)
+
         return d_loss, g_adv_loss
 
     def estimate_x0(self, xt, pred, t):
@@ -850,7 +882,6 @@ def train_unseen(args: DictConfig) -> None:
         strategy=DDPStrategy(find_unused_parameters=True),
         limit_val_batches=0.0,
         precision=32,
-        limit_train_batches=10
     )
     dataloader = LightningDataset(args)
     dataloader.setup('train')

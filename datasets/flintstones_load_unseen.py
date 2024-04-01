@@ -55,11 +55,11 @@ class StoryDataset(Dataset):
         self.seen_len = {"train": len(self.h5file['train']['text']), "test": len(self.h5file['test']['text'])}
         self.reference_img = json.load(open(os.path.join(self.data_dir, 'references_images.json'), 'r'))
         self.np_rand = np.random.RandomState(42)
-        # get 10% random samples from train and test split of the h5 file
         if self.subset == "train":
             self.rand = Random()
             self.rand.seed(0)
             self.seen_train_indexes = self.rand.sample(range(self.seen_len["train"]), 33)
+            print("seen train indexes: ", self.seen_train_indexes)
             self.seen_test_indexes = list(range(self.seen_len["test"]))
         else:
             self.rand = Random()
@@ -318,6 +318,7 @@ class StoryDataset(Dataset):
                     reference_img = self.new_followings[self.cur_char]
                     reference_img = [item for sublist in reference_img.values() for item in sublist]
                     reference_img = random.choice(reference_img)
+
                     reference_img = os.path.join(self.data_dir, 'video_frames_sampled', '{}.npy'.format(reference_img))
                     reference_img = np.load(reference_img)
                     reference_img = reference_img[np.random.randint(0, reference_img.shape[0])]

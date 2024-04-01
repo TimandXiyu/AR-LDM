@@ -22,7 +22,7 @@ import csv
 import pandas as pd
 from tqdm import tqdm
 
-CUDA="cuda:2"
+CUDA="cuda:3"
 
 
 def get_metrics_singdir(args: DictConfig) -> None:
@@ -92,6 +92,11 @@ def get_metrics(args: DictConfig) -> None:
                 if ckpt_dir not in fid_scores:
                     fid_scores[ckpt_dir] = []
                 fid_scores[ckpt_dir].append(fid)
+    # calculate the overall average
+    fid_avg = []
+    for key in fid_scores:
+        fid_avg.append(sum(fid_scores[key])/len(fid_scores[key]))
+    print(f"Average FID for all characters: {sum(fid_avg)/len(fid_avg)}")
 
     # Save the FID scores as a CSV file
     csv_file = "fid_scores/test.csv"
@@ -103,7 +108,7 @@ def get_metrics(args: DictConfig) -> None:
     print(f"FID scores saved to {csv_file}")
 
 def get_unifed_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_freezeUnet_distill=0.1"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_refer_v2_distill=0.5_adv=1.0_startG500_simpleDis"
 
     evaluator = Evaluation(args)
 
@@ -121,9 +126,9 @@ def get_unifed_metrics(args: DictConfig) -> None:
                     original_images = []
                     generated_images = []
                     for img_file in os.listdir(story_pth):
-                        if img_file.endswith("_original_eval.png") or img_file.endswith("_original.png"):
+                        if img_file.endswith("_original_eval.png"):
                             original_images.append(os.path.join(story_pth, img_file))
-                        elif img_file.endswith("_generated_eval.png") or img_file.endswith("_generated.png"):
+                        elif img_file.endswith("_generated_eval.png"):
                             generated_images.append(os.path.join(story_pth, img_file))
 
                     if original_images and generated_images:
