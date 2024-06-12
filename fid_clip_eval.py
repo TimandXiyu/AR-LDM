@@ -22,11 +22,11 @@ import csv
 import pandas as pd
 from tqdm import tqdm
 
-CUDA="cuda:3"
+CUDA="cuda:0"
 
 
 def get_metrics_singdir(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_original_text"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/flintstones/flintstones_9unseen_text_inversion/output_images"
 
     evaluator = Evaluation(args)
 
@@ -54,7 +54,7 @@ def get_metrics_singdir(args: DictConfig) -> None:
 
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_distill=0.5"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/user_study/pororo_6unseen_distill=0_adv=0.25_desc_start200/output_images"
 
     evaluator = Evaluation(args)
     fid_scores = {}
@@ -108,7 +108,7 @@ def get_metrics(args: DictConfig) -> None:
     print(f"FID scores saved to {csv_file}")
 
 def get_unifed_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_refer_v2_distill=0.5_adv=1.0_startG500_simpleDis"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/pororo_6unseen_dreambooth/output_images"
 
     evaluator = Evaluation(args)
 

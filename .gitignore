@@ -21,3 +21,4 @@ captions.txt
 CLIP/
 pycocoevalcap/
 *.csv
+/ckpts

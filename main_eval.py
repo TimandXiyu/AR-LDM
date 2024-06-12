@@ -203,7 +203,7 @@ class ARLDM(pl.LightningModule):
         self.text_encoder.resize_token_embeddings(self.ptm_clip_tokenizer_len)
         self.mm_encoder.text_encoder.resize_token_embeddings(self.ptm_blip_tokenizer_len)
 
-        if args.mode == 'test_unseen':
+        if args.mode == 'test_unseen' and not args.no_init_emb:
             self.text_encoder.resize_token_embeddings(self.ada_clip_tokenizer_len)
             self.mm_encoder.text_encoder.resize_token_embeddings(self.ada_blip_tokenizer_len)
         elif args.mode == 'test_seen':
@@ -336,26 +336,6 @@ class ARLDM(pl.LightningModule):
         source_attention_mask = torch.flatten(source_attention_mask, 0, 1)
         num_rows = len(texts[0])
         texts = [[col[i] for col in texts] for i in range(num_rows)]
-
-        # generate random indexes to permute
-        if self.args.num_permute > 0:
-            _tmp = unseen_flag[0]
-            # get the index of true and false element
-            idx_true = [i for i, x in enumerate(_tmp) if x]
-            idx_false = [i for i, x in enumerate(_tmp) if not x]
-            if any(_tmp) and not all(_tmp):
-                for _ in range(self.args.num_permute):
-                    assert B >= 2, "Batch size cannot be smaller than 2"
-                    seen_story = np.random.choice(idx_true, 1, replace=False)
-                    unseen_story = np.random.choice(idx_false, 1, replace=False)
-                    seen_img_idx = np.random.randint(seen_story * V, seen_story * V + V)
-                    unseen_img_idx = np.random.randint(unseen_story * V, unseen_story * V + V)
-                    images[unseen_img_idx] = images[seen_img_idx]
-                    captions[unseen_img_idx] = captions[seen_img_idx]
-                    attention_mask[unseen_img_idx] = attention_mask[seen_img_idx]
-                    source_images[unseen_img_idx] = source_images[seen_img_idx]
-                    source_caption[unseen_img_idx] = source_caption[seen_img_idx]
-                    source_attention_mask[unseen_img_idx] = source_attention_mask[seen_img_idx]
 
         classifier_free_idx = np.random.rand(B * V) < 0.1
 

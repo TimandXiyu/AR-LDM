@@ -17,9 +17,8 @@ def main(args):
     train_ids = np.sort(train_ids)
     val_ids = np.sort(val_ids)
     test_ids = np.sort(test_ids)
-    all_ids = np.concatenate([train_ids, val_ids, test_ids])
 
-    exclude_chars = ["harry"]
+    exclude_chars = ['popo', 'pipi', 'whale', 'shark', 'tutu', 'harry', 'red car']
 
     marked_pth = list()
     print("exclude chars: ", exclude_chars)
@@ -32,7 +31,9 @@ def main(args):
 
     print("Starting creating HDF5 file")
     f = h5py.File(args.save_path, "w")
-    for subset, ids in {'test': all_ids}.items():
+    # combine all ids
+    all_ids = np.concatenate([train_ids, val_ids, test_ids])
+    for subset, ids in {'train': train_ids, 'val': val_ids, 'test': test_ids}.items():
         excluded_ids = list()
         for id in ids:
             cur_img_pth = [str(imgs_list[id])[2:-1]] + [str(followings_list[id][i])[2:-1] for i in range(4)]

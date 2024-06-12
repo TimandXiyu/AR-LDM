@@ -22,10 +22,14 @@ import csv
 import pandas as pd
 from transformers import CLIPTokenizer, CLIPTextModel
 
-CUDA = "cuda:3"
+CUDA = "cuda:0"
 
 def get_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/GAN_grid_search/distill=0.5_adv=0.75_startG500_SimpleDis_1e-4/output_images"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/user_study/pororo_6unseen_distill=0_adv=0.25_desc_start200/output_images"
+    alter_dir = "/home/xiyu/projects/AR-LDM/ckpts/user_study/pororo_6unseen_distill=0_adv=0.25_desc_start200/output_images"
+
+    # data_dir = "/home/xiyu/projects/AR-LDM/ckpts/user_study/flintstones_oneshot_9unseen_distill=0_adv=0.75/output_images"
+    # alter_dir = "/home/xiyu/projects/AR-LDM/ckpts/user_study/flintstones_oneshot_9unseen_distill=0_adv=0.75/output_images"
 
     evaluator = Evaluation(args)
     clip_scores = {}
@@ -34,6 +38,7 @@ def get_metrics(args: DictConfig) -> None:
 
     for ckpt_dir in ckpt_dirs:
         ckpt_path = os.path.join(data_dir, ckpt_dir)
+        _alter_path = os.path.join(alter_dir, ckpt_dir)
         if os.path.isdir(ckpt_path):
             char_dirs = os.listdir(ckpt_path)
             original_caption = []
@@ -41,13 +46,14 @@ def get_metrics(args: DictConfig) -> None:
             generated_images = []
             for char_dir in char_dirs:
                 story_pth = os.path.join(ckpt_path, char_dir)
+                _alter_story_path = os.path.join(_alter_path, char_dir)
                 if os.path.isdir(story_pth):
                     for img_file in os.listdir(story_pth):
                         if img_file.endswith("_original_eval.png"):
                             original_images.append(os.path.join(story_pth, img_file))
                         elif img_file.endswith("_generated_eval.png"):
                             generated_images.append(os.path.join(story_pth, img_file))
-                    with open(os.path.join(story_pth, 'texts.json'), 'r') as f:
+                    with open(os.path.join(_alter_story_path, 'texts.json'), 'r') as f:
                         original_caption.extend(json.load(f))
 
             if original_images and generated_images:
@@ -60,7 +66,9 @@ def get_metrics(args: DictConfig) -> None:
                     c = original_cap_features[i]
                     t = generated_clip_features[i]
                     t1 = original_clip_features[i]
+                    # cossim = dot(t1, t) / (norm(t1) * norm(t))
                     cossim = dot(c, t) / (norm(c) * norm(t))
+                    # cossim = dot(t1, c) / (norm(t1) * norm(c))
                     per.append(cossim)
 
                 clip_score = np.mean(per)
@@ -94,23 +102,7 @@ class Evaluation(object):
         self.device = CUDA
         self.ckpt_path = args.test_model_file
         self.clip_model, self.clip_transform = clip.load("ViT-B/32", device=self.device)
-        if self.ckpt_path is not None:
-            self.load_clip_weights_from_ckpt()
         self.clip_model.eval()
-
-    def load_clip_weights_from_ckpt(self):
-        ckpt = torch.load(self.ckpt_path, map_location=self.device)
-        state_dict = ckpt['state_dict']
-        # print clip model layer names
-        for k, v in self.clip_model.state_dict().items():
-            print(k)
-
-        # print layer names
-        for k, v in state_dict.items():
-            print(k)
-        clip_state_dict = {k[len('text_encoder.'):]: v for k, v in state_dict.items() if k.startswith('text_encoder.')}
-        msg = self.clip_model.load_state_dict(clip_state_dict, strict=False)
-        print(msg)
 
     def extract_all_images(self, images, model, device, batch_size=64, num_workers=8):
         data = torch.utils.data.DataLoader(

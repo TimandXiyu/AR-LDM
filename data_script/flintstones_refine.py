@@ -26,8 +26,8 @@ def main(args):
     followings = pickle.load(open(os.path.join(args.data_dir, 'following_cache4.pkl'), 'rb'))
     annotations = json.load(open(os.path.join(args.data_dir, 'flintstones_annotations_v1-0.json')))
 
-    rm_char = ["pebbles", "hoppy", "bamm bamm"]  # remove characters by mention of names
-    target_root = r"D:\AR-LDM\data\target_chars"
+    rm_char = []  # remove characters by mention of names
+    target_root = "/home/xiyu/projects/AR-LDM/data/flintstones_data/target_chars"
     target_ids = list(Path(target_root).glob("**/*.jpg"))
     target_ids = [i.stem for i in target_ids]
 
@@ -51,7 +51,7 @@ def main(args):
     target_ids = list(set(target_ids))
 
     f = h5py.File(args.save_path, "w")
-    for subset, ids in {"train": train_ids, "val": val_ids, "test": test_ids}.items():
+    for subset, ids in {"val": val_ids, "test": test_ids}.items():
         ids = [i for i in ids if i in followings and len(followings[i]) == 4]
         filtered_ids = []
         for first_frame, sub_frames in followings.items():

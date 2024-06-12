@@ -11,7 +11,7 @@ import hydra
 CUDA="cuda:0"
 
 def get_dino_metrics(args: DictConfig) -> None:
-    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_refer_v2_distill=0.5_adv=1.0_startG500_simpleDis"
+    data_dir = "/home/xiyu/projects/AR-LDM/ckpts/generated_oneshot_9unseen_descriptive_text_ver2_adv_startGAN500_distill=0.5_adv=0.75"
 
     dino_net = torch.hub.load('facebookresearch/dino:main', 'dino_vits16')
     dino_net = dino_net.to(CUDA)
